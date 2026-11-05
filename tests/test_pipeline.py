@@ -49,19 +49,19 @@ def exact(result, name, key):
 
 def test_checkpoints_present(vac, novac):
     assert [c["name"] for c in vac["checkpoints"]] == [
-        "after_load", "after_delete", "after_vacuum", "after_reinsert"]
+        "00_insert", "01_delete", "02_vacuum", "03_insert"]
     assert [c["name"] for c in novac["checkpoints"]] == [
-        "after_load", "after_delete", "after_reinsert"]
+        "00_insert", "01_delete", "02_insert"]
     assert vac["environment"]["server_version"].startswith("16")
     assert vac["environment"]["block_size"] == 8192
 
 
 def test_exact_tuple_counts_match_workload(vac):
-    deleted = cp(vac, "after_delete")["operation"]["deleted"]
+    deleted = cp(vac, "01_delete")["operation"]["rows"]
     assert deleted == ROWS // 2
-    assert exact(vac, "after_load", "pgstattuple_tuple_count") == ROWS
-    assert exact(vac, "after_delete", "pgstattuple_tuple_count") == ROWS - deleted
-    assert exact(vac, "after_reinsert", "pgstattuple_tuple_count") == ROWS
+    assert exact(vac, "00_insert", "pgstattuple_tuple_count") == ROWS
+    assert exact(vac, "01_delete", "pgstattuple_tuple_count") == ROWS - deleted
+    assert exact(vac, "03_insert", "pgstattuple_tuple_count") == ROWS
 
 
 def test_page_count_matches_relation_size(vac):
@@ -71,12 +71,12 @@ def test_page_count_matches_relation_size(vac):
 
 
 def test_delete_does_not_shrink_relation(vac):
-    assert exact(vac, "after_delete", "main_pages") == exact(vac, "after_load", "main_pages")
+    assert exact(vac, "01_delete", "main_pages") == exact(vac, "00_insert", "main_pages")
 
 
 def test_delete_marks_tuples_without_freeing_space(vac):
-    load, dele = cp(vac, "after_load"), cp(vac, "after_delete")
-    deleted = dele["operation"]["deleted"]
+    load, dele = cp(vac, "00_insert"), cp(vac, "01_delete")
+    deleted = dele["operation"]["rows"]
     assert sum(p["normal_xmax_set"] for p in dele["pages"]) == deleted
     assert dele["relation"]["exact"]["pgstattuple_dead_tuple_count"] == deleted
     assert [p["exact_free_bytes"] for p in dele["pages"]] == [
@@ -87,7 +87,7 @@ def test_fsm_after_load_records_pages_the_inserter_left(vac):
     """When the insertion target page cannot fit the next tuple, the inserter
     records that page's remaining space in the FSM before moving on. The
     current target (last) page has no entry yet."""
-    pages = cp(vac, "after_load")["pages"]
+    pages = cp(vac, "00_insert")["pages"]
     *left, target = pages
     assert target["fsm_avail_bytes"] == 0
     for p in left:
@@ -97,12 +97,12 @@ def test_fsm_after_load_records_pages_the_inserter_left(vac):
 def test_fsm_can_overstate_after_inserts(vac):
     """After VACUUM records free space, later inserts into the last page do not
     update its FSM entry, so the FSM reports more space than the page has."""
-    pages = cp(vac, "after_reinsert")["pages"]
+    pages = cp(vac, "03_insert")["pages"]
     assert any(p["fsm_avail_bytes"] > p["exact_free_bytes"] for p in pages)
 
 
 def test_vacuum_removes_dead_tuples(vac):
-    c = cp(vac, "after_vacuum")
+    c = cp(vac, "02_vacuum")
     assert c["relation"]["exact"]["pgstattuple_dead_tuple_count"] == 0
     assert all(p["normal_xmax_set"] == 0 for p in c["pages"])
     assert c["observer_effect"]["pages_changed_by_pgstattuple"] == []
@@ -112,7 +112,7 @@ def test_fsm_is_rounded_down_lower_bound_after_vacuum(vac):
     """VACUUM records PageGetHeapFreeSpace (free bytes minus one line pointer),
     rounded down to a 32-byte category. So, for every page it just processed,
     exact_free - fsm must lie in [4, 4 + 32)."""
-    pages = cp(vac, "after_vacuum")["pages"]
+    pages = cp(vac, "02_vacuum")["pages"]
     assert pages
     for p in pages:
         gap = p["exact_free_bytes"] - p["fsm_avail_bytes"]
@@ -121,8 +121,8 @@ def test_fsm_is_rounded_down_lower_bound_after_vacuum(vac):
 
 
 def test_vacuum_enables_reuse_relative_to_no_vacuum(vac, novac):
-    assert novac["summary"]["pages_added_by_reinsert"] > 0
-    assert vac["summary"]["pages_added_by_reinsert"] < novac["summary"]["pages_added_by_reinsert"]
+    assert novac["summary"]["growth_vs_first_pages"] > 0
+    assert vac["summary"]["growth_vs_first_pages"] < novac["summary"]["growth_vs_first_pages"]
 
 
 def test_same_seed_gives_identical_physical_layout(vac):
