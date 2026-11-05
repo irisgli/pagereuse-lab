@@ -41,7 +41,7 @@ def exact(result, name, key):
 def test_checkpoints_present(vac, novac):
     assert [c["name"] for c in vac["checkpoints"]] == ["00_insert", "01_delete", "02_vacuum", "03_insert"]
     assert [c["name"] for c in novac["checkpoints"]] == ["00_insert", "01_delete", "02_insert"]
-    assert vac["environment"]["server_version"].startswith("16")
+    assert int(vac["environment"]["server_version"].split(".")[0]) >= 16
     assert vac["environment"]["block_size"] == 8192
 
 

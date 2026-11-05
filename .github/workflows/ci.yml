@@ -8,9 +8,14 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["16.4", "17", "18"]
+    name: test (postgres ${{ matrix.postgres }})
     services:
       postgres:
-        image: postgres:16.4
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_USER: pagereuse
           POSTGRES_PASSWORD: pagereuse

@@ -8,7 +8,7 @@ PostgreSQL relations sometimes grow although space inside them could, in princip
 
 ## Environment
 
-- PostgreSQL 16.4 (Docker image `postgres:16.4`), default 8 kB block size, default configuration.
+- PostgreSQL 16.4 by default (`postgres:16.4`); 17.11 and 18.6 via `PG_IMAGE`. Default 8 kB block size, default configuration.
 - Extensions: `pageinspect` (raw page reads), `pgstattuple` (exact tuple scan), `pg_freespacemap` (FSM reads).
 - Database `pagereuse_lab`; only tables matching `^prl_[a-z0-9_]+$` are ever created, dropped or modified.
 
@@ -59,13 +59,17 @@ The viewer's "FSM minus measured" colouring exists to make the gap between recor
 - `hold_snapshot` opens a REPEATABLE READ transaction on a separate connection and runs one SELECT, which pins that backend's xmin. VACUUM cannot remove tuples deleted after that point; the lab records the server's own `VACUUM (VERBOSE)` line, "N are dead but not yet removable", rather than inferring it. Measured: with the snapshot held, reinserting the deleted rows extends the relation even though every deleted tuple's space is physically present; after `release_snapshot` the next VACUUM reclaims it and the following reinsert adds no pages.
 - `insert` with `sessions` > 1 splits the rows into contiguous id slices and inserts them from that many connections at once, each in one transaction. Each backend keeps its own insertion target, so pages fill from several writers and the layout is no longer byte-reproducible across runs; only counts and sizes are asserted for these.
 
+## Releases compared
+
+All five suites at 2000 rows were run on 16.4, 17.11 and 18.6 (2026-11-04). For every single-session workload the per-page records were identical across the three releases at every checkpoint, down to FSM values and line-pointer states. Only the 4-session load differed (61, 62, 63 pages), and that workload is not deterministic within one release either. CI runs the test suite on all three. The earlier statement in this document that later releases differ in insert and pruning behaviour was an assumption; it is withdrawn for the mechanisms measured here.
+
 ## Predictor evaluation
 
 Predictors are scored walk-forward: at step i they see checkpoint i-1 and the operation of step i, never the actual outcome. No parameter is fitted on the run being scored. The capacity model's known failure, repeat updates after the hot rows were relocated, is pinned by a test so a change in behaviour is noticed.
 
 ## Not covered
 
-- Only PostgreSQL 16.4 has been measured. Insert and pruning behaviour differ in later releases.
+- Measured on 16.4, 17.11 and 18.6 only, all with default configuration. Non-default settings such as `vacuum_truncate` off or a different block size are not covered.
 - Concurrency is limited to parallel inserters and one held snapshot. Concurrent updates, lock contention between writers and autovacuum timing are out of scope.
 - TOAST, variable-length rows, indexes' own storage, and WAL are not measured.
 - The FSM is read through `pg_freespace`, which reports the leaf value for each page; the upper levels of the FSM tree are not inspected.

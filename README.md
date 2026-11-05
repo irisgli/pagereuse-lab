@@ -4,14 +4,14 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16.4-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 6](https://img.shields.io/badge/phase-6%20multi--session-informational)
+[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 7](https://img.shields.io/badge/phase-7%20version%20matrix-informational)
 
 </div>
 
 ## Quick start
 
 ```bash
-docker compose up -d --wait
+docker compose up -d --wait              # PG_IMAGE=postgres:18 docker compose up -d --wait for another release
 uv sync
 uv run pytest -v
 uv run python -m pagereuse run --rows 10000 --fillfactor 100
@@ -73,6 +73,10 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 
 On the three suites at 2000 rows the capacity model is exact on every insert, delete, VACUUM and first update round, and has mean absolute error under 2 pages against about 10 for `last_value`. It underestimates repeat updates once an earlier round relocated the hot rows to fresh pages, because measurements carry no row identities; the test suite pins this. Machine learning is deferred until a workload beats this physical model.
 
+## Across PostgreSQL releases
+
+The five suites at 2000 rows were run on 16.4, 17.11 and 18.6. Every single-session workload produced byte-identical per-page layouts on all three: the same `pd_lower`, `pd_upper`, FSM value and line-pointer states on every page at every checkpoint. The only run that differed was the 4-session load (61, 62 and 63 pages), and that one varies between runs on the same release because it depends on thread scheduling. For these heap-placement mechanisms, nothing measured here changed between 16 and 18.
+
 ## Assumptions and limitations
 
 The full account is in [docs/methodology.md](docs/methodology.md). In short:
@@ -93,4 +97,4 @@ uv run ruff check . && uv run ruff format --check .
 uv run pytest -q
 ```
 
-CI runs the same three commands against a `postgres:16.4` service container on every push and pull request.
+CI runs the same three commands against `postgres:16.4`, `postgres:17` and `postgres:18` service containers on every push and pull request. Switching the local container between releases needs `docker compose down -v` first, since the data directory is release-specific.
