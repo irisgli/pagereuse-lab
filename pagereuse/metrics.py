@@ -96,7 +96,8 @@ def relation_metrics(conn: Connection, table: str) -> dict:
         conn.execute(
             """SELECT c.relpages, c.reltuples,
                   s.n_live_tup, s.n_dead_tup, s.n_tup_ins, s.n_tup_del,
-                  s.n_tup_upd, s.n_tup_hot_upd, s.vacuum_count
+                  s.n_tup_upd, s.n_tup_hot_upd, s.vacuum_count,
+                  s.autovacuum_count, s.n_ins_since_vacuum, s.last_autovacuum::text AS last_autovacuum
            FROM pg_class c JOIN pg_stat_user_tables s ON s.relid = c.oid
            WHERE c.oid = %s::regclass""",
             (rel,),

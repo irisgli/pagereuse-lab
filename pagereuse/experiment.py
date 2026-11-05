@@ -14,6 +14,11 @@ Step dicts (JSON-friendly):
                                  on a side connection and keep it across later
                                  steps; several may be held under different names
     {"op": "release_snapshot", "name": "a"}  close that one
+    {"op": "wait_autovacuum", "timeout": 20} poll until an autovacuum of the table
+                                 completes or the timeout passes. ``ran`` compares
+                                 against the previous checkpoint; an autovacuum
+                                 that finished before that checkpoint shows up in
+                                 its ``autovacuum_count`` instead
     {"op": "repeat", "times": T, "steps": [...]}
 
 * ``sessions`` > 1 splits an insert across that many connections running at
@@ -42,6 +47,7 @@ from __future__ import annotations
 import random
 import re
 import string
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -74,6 +80,7 @@ class ExperimentConfig:
     payload_bytes: int = 200
     fillfactor: int = 100
     index_tag: bool = True
+    autovacuum: dict | None = None  # reloptions, e.g. {"autovacuum_vacuum_scale_factor": 0.02}
     delete_every: int = 2
     vacuum: bool = True
     seed: int = 42
@@ -125,6 +132,9 @@ def _validate_step(s: dict) -> None:
             raise ValueError("bad every/fraction")
         if op == "update" and s.get("column", "payload") not in ("payload", "tag"):
             raise ValueError("update column must be 'payload' or 'tag'")
+    elif op == "wait_autovacuum":
+        if float(s.get("timeout", 20)) <= 0:
+            raise ValueError("wait_autovacuum timeout must be positive")
     elif op not in ("vacuum", "hold_snapshot", "release_snapshot"):
         raise ValueError(f"unknown step op {op!r}")
 
@@ -177,6 +187,7 @@ class _State:
         self.next_id = 1
         self.live: dict[int, int] = {}  # id -> current payload length
         self.snapshots: dict[str, psycopg.Connection] = {}
+        self.autovacuum_count = 0  # as of the last checkpoint
 
     def close(self, name: str | None = None) -> None:
         for key in [name] if name is not None else list(self.snapshots):
@@ -211,6 +222,33 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
             st.live[i] = len(p)
         st.next_id += n
         return {"op": op, "rows": n, "sessions": sessions}
+
+    if op == "wait_autovacuum":
+        timeout = float(s.get("timeout", 20))
+        # Baseline is the previous checkpoint's count, so a run that finished
+        # between that measurement and now still counts as this step's.
+        before = st.autovacuum_count
+        with db.connect(conninfo) as conn:
+            started = time.monotonic()
+            while time.monotonic() - started < timeout:
+                conn.execute("SELECT pg_stat_clear_snapshot()")
+                count = _autovacuum_count(conn, cfg.table)
+                if count > before:
+                    return {
+                        "op": op,
+                        "ran": True,
+                        "seconds": round(time.monotonic() - started, 2),
+                        "count_before": before,
+                        "count_after": count,
+                    }
+                time.sleep(0.25)
+        return {
+            "op": op,
+            "ran": False,
+            "seconds": round(timeout, 2),
+            "count_before": before,
+            "count_after": before,
+        }
 
     name = str(s.get("name", "default"))
     if op == "hold_snapshot":
@@ -278,6 +316,21 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
     raise ValueError(op)
 
 
+def _autovacuum_count(conn, table: str) -> int:
+    return conn.execute(
+        "SELECT autovacuum_count FROM pg_stat_user_tables WHERE relid = %s::regclass", (table,)
+    ).fetchone()[0]
+
+
+AUTOVACUUM_GUCS = (
+    "autovacuum_naptime",
+    "autovacuum_vacuum_threshold",
+    "autovacuum_vacuum_scale_factor",
+    "autovacuum_vacuum_insert_threshold",
+    "autovacuum_vacuum_insert_scale_factor",
+)
+
+
 def _parse_pages_removed(verbose: str) -> int | None:
     m = re.search(r"pages: (\d+) removed", verbose)
     return int(m.group(1)) if m else None
@@ -298,14 +351,26 @@ def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
     with db.connect(conninfo) as conn:
         server_version = conn.execute("SHOW server_version").fetchone()[0]
         block_size = int(conn.execute("SHOW block_size").fetchone()[0])
+        if cfg.autovacuum is not None and conn.execute("SHOW autovacuum_naptime").fetchone()[0] != "1s":
+            # The launcher's default 60 s nap would dominate every wait; 1 s keeps
+            # runs short. Server-wide, recorded in the result, restored by nobody.
+            conn.execute("ALTER SYSTEM SET autovacuum_naptime = '1s'")
+            conn.execute("SELECT pg_reload_conf()")
+            time.sleep(0.5)
+        gucs = {g: conn.execute(f"SHOW {g}").fetchone()[0] for g in AUTOVACUUM_GUCS}
         conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(t))
+        options = {"fillfactor": cfg.fillfactor, "autovacuum_enabled": cfg.autovacuum is not None}
+        options.update(cfg.autovacuum or {})
         conn.execute(
             sql.SQL(
-                "CREATE TABLE {} (id integer PRIMARY KEY, tag integer NOT NULL, "
-                "payload text NOT NULL) "
-                "WITH (fillfactor = {}, autovacuum_enabled = false, "
-                "toast.autovacuum_enabled = false)"
-            ).format(t, sql.Literal(cfg.fillfactor))
+                "CREATE TABLE {} (id integer PRIMARY KEY, tag integer NOT NULL, payload text NOT NULL) "
+                "WITH ({})"
+            ).format(
+                t,
+                sql.SQL(", ").join(
+                    sql.SQL("{} = {}").format(sql.Identifier(k), sql.Literal(v)) for k, v in options.items()
+                ),
+            )
         )
         if cfg.index_tag:
             conn.execute(
@@ -318,6 +383,7 @@ def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
         for i, s in enumerate(steps):
             operation = _run_step(cfg, conninfo, s, st, rng)
             checkpoints.append(_measure(conninfo, cfg.table, i, operation))
+            st.autovacuum_count = checkpoints[-1]["relation"]["estimated"]["autovacuum_count"]
     finally:
         st.close()
 
@@ -328,9 +394,9 @@ def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
         "started_at": datetime.now(UTC).isoformat(),
         "config": asdict(cfg),
         "steps": steps,
-        "environment": {"server_version": server_version, "block_size": block_size},
+        "environment": {"server_version": server_version, "block_size": block_size, "autovacuum": gucs},
         "methodology": {
-            "autovacuum": "disabled on experiment table",
+            "autovacuum": "off unless config.autovacuum gives reloptions; then naptime is 1 s",
             "step_isolation": "fresh backend per step; held snapshots live on a separate connection",
             "schema": "id int PK, tag int (indexed unless index_tag=false), payload text",
             "hot_updates": "payload updates are HOT-eligible; tag updates never HOT when indexed",

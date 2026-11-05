@@ -187,7 +187,43 @@ def overlapping_snapshots(rows: int) -> list[ExperimentConfig]:
     ]
 
 
+def _maintenance(rows: int) -> list[dict]:
+    """Load, then a small delete that stays under default thresholds, reinsert,
+    then a large delete that crosses them, reinsert. Waits bracket each delete."""
+    return [
+        {"op": "insert", "rows": rows},
+        {"op": "wait_autovacuum", "timeout": 10},
+        {"op": "delete", "pattern": "random", "fraction": 0.1},
+        {"op": "wait_autovacuum", "timeout": 5},
+        {"op": "insert", "rows": rows // 10},
+        {"op": "delete", "pattern": "random", "fraction": 0.4},
+        {"op": "wait_autovacuum", "timeout": 15},
+        {"op": "insert", "rows": (rows * 9 // 10) * 4 // 10},
+    ]
+
+
+def autovacuum_thresholds(rows: int) -> list[ExperimentConfig]:
+    """Default thresholds (50 + 20% of reltuples) vs an aggressive 2% scale factor."""
+    return [
+        ExperimentConfig(
+            table="prl_av_default",
+            rows=rows,
+            label="autovacuum, default thresholds",
+            autovacuum={},
+            steps=_maintenance(rows),
+        ),
+        ExperimentConfig(
+            table="prl_av_eager",
+            rows=rows,
+            label="autovacuum, scale factor 0.02",
+            autovacuum={"autovacuum_vacuum_scale_factor": 0.02},
+            steps=_maintenance(rows),
+        ),
+    ]
+
+
 SUITES = {
+    "autovacuum": autovacuum_thresholds,
     "overlap": overlapping_snapshots,
     "snapshots": long_snapshots,
     "concurrency": concurrent_inserts,

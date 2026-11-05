@@ -52,3 +52,8 @@ def conc():
 @pytest.fixture(scope="session")
 def ovl():
     return _suite("overlap")
+
+
+@pytest.fixture(scope="session")
+def av():
+    return _suite("autovacuum")

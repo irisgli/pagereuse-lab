@@ -9,6 +9,8 @@ Predictors
   last_value    pages stay what they were
   linear_trend  least-squares line through the page counts so far
   capacity      slotted-page accounting (the physical model, see below)
+                plus PostgreSQL's documented autovacuum trigger rule for
+                wait_autovacuum steps
 
 The capacity model follows how PostgreSQL places tuples:
 * An INSERT asks the free space map for a page with at least
@@ -71,6 +73,27 @@ def predict_capacity(history: list[int], prev: dict, op: dict, env: dict, cfg: d
 
     if kind in ("delete", "hold_snapshot", "release_snapshot"):
         return npages
+
+    if kind == "wait_autovacuum":
+        # Documented trigger: dead > threshold + scale_factor * reltuples, or
+        # inserts since the last vacuum > insert_threshold + insert_scale * reltuples.
+        # A never-vacuumed table has reltuples = -1, which the launcher treats as 0.
+        est = prev["relation"]["estimated"]
+        g = dict(env.get("autovacuum", {}))
+        g.update(cfg.get("autovacuum") or {})
+        reltuples = max(0.0, float(est["reltuples"]))
+        dead_trigger = (
+            est["n_dead_tup"]
+            > float(g["autovacuum_vacuum_threshold"]) + float(g["autovacuum_vacuum_scale_factor"]) * reltuples
+        )
+        ins_trigger = (
+            est["n_ins_since_vacuum"]
+            > float(g["autovacuum_vacuum_insert_threshold"])
+            + float(g["autovacuum_vacuum_insert_scale_factor"]) * reltuples
+        )
+        if not (dead_trigger or ins_trigger):
+            return npages
+        kind = "vacuum"
 
     if kind == "vacuum":
         # VACUUM removes only versions older than the xmin horizon; the page

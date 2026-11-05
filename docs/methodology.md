@@ -14,7 +14,7 @@ PostgreSQL relations sometimes grow although space inside them could, in princip
 
 ## Workload control
 
-- Autovacuum is disabled on every experiment table. VACUUM runs only as an explicit step.
+- Autovacuum is disabled on every experiment table unless the run's `autovacuum` reloptions enable it. For such runs the lab sets `autovacuum_naptime` to 1 s with `ALTER SYSTEM` (the default 60 s nap would dominate every wait); this is server-wide, is recorded in `environment.autovacuum`, and is not reverted. Otherwise VACUUM runs only as an explicit step.
 - Every step runs on a fresh connection. A backend caches its last insertion target block; a fresh backend starts from the FSM, which keeps the FSM, not session state, as the thing under test.
 - Payloads are fixed-length random ASCII, seeded, far below the TOAST threshold, so all tuples of a run have the same size and nothing is compressed or stored out of line.
 - Row choice for deletes and updates is deterministic given the seed. `stride` picks ids divisible by k, `random` a seeded sample, `oldest` the first fraction of live ids.
@@ -68,6 +68,12 @@ All five suites at 2000 rows were run on 16.4, 17.11 and 18.6 (2026-11-04). For 
 With two snapshots taken before two successive deletes and released one at a time, VACUUM behaved exactly as the xmin horizon predicts: while both were held it removed nothing and reported all 1000 deleted versions as "dead but not yet removable"; after the older one was released it removed the 500 versions deleted before the younger snapshot and reported the other 500 as not yet removable; after the younger was released it removed the rest. The per-page `dead_removable` count, read before each VACUUM, matched what VACUUM then removed, and the capacity model was exact on every step of both runs. The relation grew only on the reinsert made while both snapshots were held; once space had been reclaimed the next reinsert added no pages.
 
 A side observation from the control run: the second DELETE opportunistically pruned most of the first delete's dead versions on the pages it visited (they became `LP_DEAD` line pointers, which `pgstattuple` no longer counts as dead tuples). With a snapshot held that pruning did not happen. "Dead tuple count" from `pgstattuple` therefore undercounts dead space once pruning has run; the line-pointer counts are the complete picture.
+
+## Autovacuum
+
+The trigger rule is the documented one: a table is vacuumed when dead tuples exceed `autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor * reltuples`, or inserts since the last vacuum exceed the insert equivalents. One detail matters for fresh tables: `reltuples` is -1 until the first VACUUM or ANALYZE, and the launcher treats that as 0. Measured: loading 2000 rows into a new table triggered an insert-driven autovacuum within seconds (2000 > 1000 + 0), which set `reltuples`. After that, deleting 10% (200 dead, under 50 + 0.2 × 2000 = 450) triggered nothing, and reinserting 200 rows extended the relation from 61 to 67 pages with 200 dead tuples' worth of space present. Deleting 40% more crossed the threshold; autovacuum ran within 0.3 s and the next reinsert added no pages. With `autovacuum_vacuum_scale_factor = 0.02` the 10% delete was enough (200 > 90) and the table never grew. The capacity model applies the same rule to predict whether a `wait_autovacuum` step changes anything.
+
+Timing caveat: an autovacuum can complete between a step and its measurement, or during a later step; the lab records `autovacuum_count` at every checkpoint so such runs are visible, and each wait step's baseline is the previous checkpoint's count.
 
 ## Prior work
 

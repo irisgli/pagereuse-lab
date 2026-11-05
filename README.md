@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 8](https://img.shields.io/badge/phase-8%20overlapping%20snapshots-informational)
+[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 9](https://img.shields.io/badge/phase-9%20autovacuum-informational)
 
 </div>
 
@@ -34,6 +34,7 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `update` | `pattern`, `column` payload / tag, `grow_bytes` | `payload` is HOT-eligible, `tag` is indexed so never HOT |
 | `insert` | `sessions` | split across that many connections running at once |
 | `vacuum` | | `VACUUM (VERBOSE)`; records the server's "dead but not yet removable" count |
+| `wait_autovacuum` | `timeout` | poll until an autovacuum of the table completes; records whether one ran and how long it took |
 | `hold_snapshot` / `release_snapshot` | `name` | keep a REPEATABLE READ transaction open on a side connection across later steps; several may be held at once |
 | `repeat` | `times`, `steps` | expands inline |
 
@@ -49,6 +50,7 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `snapshots` | a long-running snapshot held across delete and VACUUM, or none | delete half, VACUUM, reinsert half; the held variant then releases, VACUUMs and reinserts again |
 | `concurrency` | 1 vs 4 inserting sessions | load, delete half, VACUUM, reinsert half |
 | `overlap` | two snapshots with staggered lifetimes, or none | two deletes of a quarter each, VACUUM and reinsert after each release |
+| `autovacuum` | default thresholds vs `autovacuum_vacuum_scale_factor = 0.02` | autovacuum on, naptime 1 s; a 10% delete and reinsert, then a 40% delete and reinsert |
 
 ## Measurements and provenance
 
@@ -84,7 +86,7 @@ The five suites at 2000 rows were run on 16.4, 17.11 and 18.6. Every single-sess
 
 The full account is in [docs/methodology.md](docs/methodology.md). In short:
 
-- Autovacuum is disabled on experiment tables; every phase uses a fresh backend.
+- Autovacuum is off on experiment tables unless a run enables it; then the lab sets the server's `autovacuum_naptime` to 1 s (server-wide, recorded in the result). Every step uses a fresh backend.
 - `exact_free_bytes` is unused space between line pointers and tuples. It is not all reusable: a new tuple also needs a 4-byte line pointer, and fillfactor reserves space that INSERT will not use.
 - `pgstattuple` scans the heap and can opportunistically prune pages. Page metrics are read before it, and pages it changed are listed in `observer_effect`.
 - `normal_xmax_set` counts tuple headers with a nonzero xmax. It is a raw header observation, not a visibility judgment.
