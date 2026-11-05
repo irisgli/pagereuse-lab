@@ -28,7 +28,7 @@ PostgreSQL relations sometimes grow although space inside them could, in princip
 | `fsm` | `pg_freespace(rel, blkno)` | What the FSM recorded, in 32-byte categories rounded down. Written by VACUUM and when an inserter leaves a page; not updated by later inserts into that page, so it can overstate. |
 | `estimated` | `pg_class.relpages`, `reltuples`, `pg_stat_user_tables` | Planner estimates and cumulative counters. Used for `n_tup_hot_upd` and nothing load-bearing. |
 
-Per page the lab records the line-pointer state counts (unused, normal, redirect, dead), how many normal tuples carry a nonzero `xmax`, the bytes those tuples occupy, and the `PD_ALL_VISIBLE` flag.
+Per page the lab records the line-pointer state counts, the xmin horizon at read time (`min(backend_xmin)` over other sessions in `pg_stat_activity`), how many xmax-set tuples are older than it (`dead_removable`), (unused, normal, redirect, dead), how many normal tuples carry a nonzero `xmax`, the bytes those tuples occupy, and the `PD_ALL_VISIBLE` flag.
 
 ## Observer effects
 
@@ -62,6 +62,18 @@ The viewer's "FSM minus measured" colouring exists to make the gap between recor
 ## Releases compared
 
 All five suites at 2000 rows were run on 16.4, 17.11 and 18.6 (2026-11-04). For every single-session workload the per-page records were identical across the three releases at every checkpoint, down to FSM values and line-pointer states. Only the 4-session load differed (61, 62, 63 pages), and that workload is not deterministic within one release either. CI runs the test suite on all three. The earlier statement in this document that later releases differ in insert and pruning behaviour was an assumption; it is withdrawn for the mechanisms measured here.
+
+## Overlapping snapshots
+
+With two snapshots taken before two successive deletes and released one at a time, VACUUM behaved exactly as the xmin horizon predicts: while both were held it removed nothing and reported all 1000 deleted versions as "dead but not yet removable"; after the older one was released it removed the 500 versions deleted before the younger snapshot and reported the other 500 as not yet removable; after the younger was released it removed the rest. The per-page `dead_removable` count, read before each VACUUM, matched what VACUUM then removed, and the capacity model was exact on every step of both runs. The relation grew only on the reinsert made while both snapshots were held; once space had been reclaimed the next reinsert added no pages.
+
+A side observation from the control run: the second DELETE opportunistically pruned most of the first delete's dead versions on the pages it visited (they became `LP_DEAD` line pointers, which `pgstattuple` no longer counts as dead tuples). With a snapshot held that pruning did not happen. "Dead tuple count" from `pgstattuple` therefore undercounts dead space once pruning has run; the line-pointer counts are the complete picture.
+
+## Prior work
+
+- Peter Geoghegan, "The Free Space Map: Problems and Opportunities", pgsql-hackers, 2021: a developer's account of how FSM-driven placement can scatter related tuples and fragment the heap. The `fsm_gap` colouring and the FSM-based insert rule in the capacity model are the lab's way of making that placement visible and testable.
+- Bruce Momjian, "MVCC Unmasked": the visibility rules that make the held-snapshot results what they are. The lab's `xmax`-based removability count follows the same xmin-horizon reasoning.
+- PostgreSQL documentation on routine vacuuming, fillfactor, HOT updates and `pg_freespacemap`, the source for every expectation the tests encode.
 
 ## Predictor evaluation
 

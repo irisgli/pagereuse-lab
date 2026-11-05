@@ -10,9 +10,10 @@ Step dicts (JSON-friendly):
   oldest: the first ``fraction`` of live ids (queue-like churn).
     {"op": "update", "pattern": ..., "column": "payload"|"tag", "grow_bytes": G}
     {"op": "vacuum"}
-    {"op": "hold_snapshot"}      open a REPEATABLE READ transaction on a side
-                                 connection and keep it open across later steps
-    {"op": "release_snapshot"}   close it
+    {"op": "hold_snapshot", "name": "a"}     open a REPEATABLE READ transaction
+                                 on a side connection and keep it across later
+                                 steps; several may be held under different names
+    {"op": "release_snapshot", "name": "a"}  close that one
     {"op": "repeat", "times": T, "steps": [...]}
 
 * ``sessions`` > 1 splits an insert across that many connections running at
@@ -175,12 +176,11 @@ class _State:
     def __init__(self) -> None:
         self.next_id = 1
         self.live: dict[int, int] = {}  # id -> current payload length
-        self.snapshot_conn = None
+        self.snapshots: dict[str, psycopg.Connection] = {}
 
-    def close(self) -> None:
-        if self.snapshot_conn is not None:
-            self.snapshot_conn.close()
-            self.snapshot_conn = None
+    def close(self, name: str | None = None) -> None:
+        for key in [name] if name is not None else list(self.snapshots):
+            self.snapshots.pop(key).close()
 
 
 def _insert_rows(conninfo, t: sql.Composable, rows: list[tuple]) -> None:
@@ -212,21 +212,22 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
         st.next_id += n
         return {"op": op, "rows": n, "sessions": sessions}
 
+    name = str(s.get("name", "default"))
     if op == "hold_snapshot":
-        if st.snapshot_conn is not None:
-            raise ValueError("a snapshot is already held")
+        if name in st.snapshots:
+            raise ValueError(f"snapshot {name!r} is already held")
         conn = db.connect(conninfo)
         conn.autocommit = False
         conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
         snapshot_count = conn.execute(sql.SQL("SELECT count(*) FROM {}").format(t)).fetchone()[0]
-        st.snapshot_conn = conn
-        return {"op": op, "rows_visible_to_snapshot": snapshot_count}
+        st.snapshots[name] = conn
+        return {"op": op, "name": name, "rows_visible_to_snapshot": snapshot_count}
 
     if op == "release_snapshot":
-        if st.snapshot_conn is None:
-            raise ValueError("no snapshot is held")
-        st.close()
-        return {"op": op}
+        if name not in st.snapshots:
+            raise ValueError(f"snapshot {name!r} is not held")
+        st.close(name)
+        return {"op": op, "name": name}
 
     with db.connect(conninfo) as conn:
         if op == "delete":
@@ -267,7 +268,8 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
             text = "\n".join(notices)
             return {
                 "op": op,
-                "snapshot_held": st.snapshot_conn is not None,
+                "snapshot_held": bool(st.snapshots),
+                "snapshots_held": sorted(st.snapshots),
                 "dead_not_yet_removable": _parse_not_removable(text),
                 "pages_removed": _parse_pages_removed(text),
                 "notices": text,

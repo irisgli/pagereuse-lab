@@ -73,11 +73,9 @@ def predict_capacity(history: list[int], prev: dict, op: dict, env: dict, cfg: d
         return npages
 
     if kind == "vacuum":
-        if op.get("snapshot_held"):
-            # Deleted versions are still visible to the held snapshot, so
-            # nothing is removed and no tail can become empty.
-            return npages
-        live = [p["lp_normal"] - p["normal_xmax_set"] for p in pages]
+        # VACUUM removes only versions older than the xmin horizon; the page
+        # record counted those at measurement time.
+        live = [p["lp_normal"] - p["dead_removable"] for p in pages]
         trailing_empty = 0
         for n in reversed(live):
             if n > 0:

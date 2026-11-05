@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 7](https://img.shields.io/badge/phase-7%20version%20matrix-informational)
+[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 8](https://img.shields.io/badge/phase-8%20overlapping%20snapshots-informational)
 
 </div>
 
@@ -34,7 +34,7 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `update` | `pattern`, `column` payload / tag, `grow_bytes` | `payload` is HOT-eligible, `tag` is indexed so never HOT |
 | `insert` | `sessions` | split across that many connections running at once |
 | `vacuum` | | `VACUUM (VERBOSE)`; records the server's "dead but not yet removable" count |
-| `hold_snapshot` / `release_snapshot` | | keep a REPEATABLE READ transaction open on a side connection across later steps |
+| `hold_snapshot` / `release_snapshot` | `name` | keep a REPEATABLE READ transaction open on a side connection across later steps; several may be held at once |
 | `repeat` | `times`, `steps` | expands inline |
 
 `run` uses load, delete every k-th row, vacuum, reinsert. `run --steps file.json` takes any step list.
@@ -48,6 +48,7 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `cycles` | VACUUM vs none, random vs oldest-first deletes | three delete-half / reinsert-half cycles, live row count constant |
 | `snapshots` | a long-running snapshot held across delete and VACUUM, or none | delete half, VACUUM, reinsert half; the held variant then releases, VACUUMs and reinserts again |
 | `concurrency` | 1 vs 4 inserting sessions | load, delete half, VACUUM, reinsert half |
+| `overlap` | two snapshots with staggered lifetimes, or none | two deletes of a quarter each, VACUUM and reinsert after each release |
 
 ## Measurements and provenance
 
@@ -56,6 +57,8 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `exact` | `pg_relation_size`, `pgstattuple`, `pageinspect` (`pd_upper - pd_lower`, line pointer states) | Read from the relation's bytes |
 | `fsm` | `pg_freespace(rel, blkno)` | Recorded value in 32-byte categories, rounded down when written. Written by VACUUM and when an inserter leaves a full page; later inserts do not update it, so it can overstate free space |
 | `estimated` | `pg_class.relpages/reltuples`, `pg_stat_user_tables` | Planner estimates and cumulative stats |
+
+Each page record also carries `dead_removable`: deleted versions older than the xmin horizon (the oldest `backend_xmin` among other sessions), which is what a VACUUM run at that moment could remove.
 
 ## Viewer
 
@@ -69,7 +72,7 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 |---|---|
 | `last_value` | pages stay what they were |
 | `linear_trend` | least-squares line through the page counts so far |
-| `capacity` | slotted-page accounting: inserts use pages the FSM offers for `tuple + reserve` bytes, then the last page, then extend; updates stay on their page when the new version fits (reserve usable, dead versions pruned first); VACUUM truncates the all-dead tail |
+| `capacity` | slotted-page accounting: inserts use pages the FSM offers for `tuple + reserve` bytes, then the last page, then extend; updates stay on their page when the new version fits (reserve usable, dead versions pruned first); VACUUM removes only versions older than the xmin horizon and truncates a tail left with no live tuple |
 
 On the three suites at 2000 rows the capacity model is exact on every insert, delete, VACUUM and first update round, and has mean absolute error under 2 pages against about 10 for `last_value`. It underestimates repeat updates once an earlier round relocated the hot rows to fresh pages, because measurements carry no row identities; the test suite pins this. Machine learning is deferred until a workload beats this physical model.
 

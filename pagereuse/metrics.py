@@ -34,6 +34,7 @@ PAGE_COLUMNS = (
     "lp_redirect",
     "lp_dead",
     "normal_xmax_set",
+    "dead_removable",
     "normal_tuple_bytes",
 )
 
@@ -45,7 +46,7 @@ SELECT b.blkno,
        pg_freespace(%(rel)s::regclass, b.blkno) AS fsm_avail_bytes,
        (h.flags & {PD_ALL_VISIBLE}) <> 0 AS all_visible,
        i.lp_total, i.lp_unused, i.lp_normal, i.lp_redirect, i.lp_dead,
-       i.normal_xmax_set, i.normal_tuple_bytes
+       i.normal_xmax_set, i.dead_removable, i.normal_tuple_bytes
 FROM generate_series(0, (pg_relation_size(%(rel)s::regclass)
                          / current_setting('block_size')::int) - 1) AS b(blkno)
 CROSS JOIN LATERAL (SELECT get_raw_page(%(rel)s::text, b.blkno::int) AS raw) AS p
@@ -57,6 +58,9 @@ CROSS JOIN LATERAL (
            count(*) FILTER (WHERE lp_flags = {LP_REDIRECT}) AS lp_redirect,
            count(*) FILTER (WHERE lp_flags = {LP_DEAD})     AS lp_dead,
            count(*) FILTER (WHERE lp_flags = {LP_NORMAL} AND t_xmax <> '0') AS normal_xmax_set,
+           count(*) FILTER (WHERE lp_flags = {LP_NORMAL} AND t_xmax <> '0'
+                            AND (%(horizon)s::bigint IS NULL
+                                 OR t_xmax::text::bigint < %(horizon)s::bigint)) AS dead_removable,
            coalesce(sum(lp_len) FILTER (WHERE lp_flags = {LP_NORMAL}), 0)::int AS normal_tuple_bytes
     FROM heap_page_items(p.raw)
 ) AS i
@@ -105,8 +109,19 @@ def relation_metrics(conn: Connection, table: str) -> dict:
     }
 
 
+def xmin_horizon(conn: Connection) -> int | None:
+    """Oldest backend_xmin among other sessions: VACUUM cannot remove tuples
+    whose xmax is at or beyond it. None when no other session pins a snapshot."""
+    row = conn.execute(
+        "SELECT min(backend_xmin::text::bigint) FROM pg_stat_activity WHERE pid <> pg_backend_pid()"
+    ).fetchone()
+    return row[0]
+
+
 def page_metrics(conn: Connection, table: str) -> list[dict]:
+    """Per-page records. ``dead_removable`` counts xmax-set tuples older than the
+    xmin horizon at read time, which is what a VACUUM run now could remove."""
     rel = check_table_name(table)
-    cur = conn.execute(_PAGES_SQL, {"rel": rel})
+    cur = conn.execute(_PAGES_SQL, {"rel": rel, "horizon": xmin_horizon(conn)})
     cols = [d.name for d in cur.description]
     return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]

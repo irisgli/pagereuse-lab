@@ -47,3 +47,8 @@ def snap():
 @pytest.fixture(scope="session")
 def conc():
     return _suite("concurrency")
+
+
+@pytest.fixture(scope="session")
+def ovl():
+    return _suite("overlap")

@@ -150,7 +150,45 @@ def concurrent_inserts(rows: int) -> list[ExperimentConfig]:
     return out
 
 
+def _overlap(rows: int, hold: bool) -> list[dict]:
+    """Two deletes of a quarter each, each covered by its own snapshot taken just
+    before it. Reinserts total what was deleted, so the live count ends where it
+    began; the snapshots are released one at a time with a VACUUM after each."""
+    quarter = rows // 4
+    snap = lambda op, name: [{"op": op, "name": name}] if hold else []  # noqa: E731
+    return [
+        {"op": "insert", "rows": rows},
+        *snap("hold_snapshot", "a"),
+        {"op": "delete", "pattern": "random", "fraction": 0.25},
+        *snap("hold_snapshot", "b"),
+        {"op": "delete", "pattern": "random", "fraction": 1 / 3},
+        {"op": "vacuum"},
+        {"op": "insert", "rows": quarter},
+        *snap("release_snapshot", "a"),
+        {"op": "vacuum"},
+        {"op": "insert", "rows": quarter},
+        *snap("release_snapshot", "b"),
+        {"op": "vacuum"},
+    ]
+
+
+def overlapping_snapshots(rows: int) -> list[ExperimentConfig]:
+    """Staggered snapshot lifetimes: VACUUM can reclaim only what died before the oldest one."""
+    return [
+        ExperimentConfig(
+            table="prl_ovl_none",
+            rows=rows,
+            label="staggered churn, no snapshots",
+            steps=_overlap(rows, False),
+        ),
+        ExperimentConfig(
+            table="prl_ovl_two", rows=rows, label="staggered churn, two snapshots", steps=_overlap(rows, True)
+        ),
+    ]
+
+
 SUITES = {
+    "overlap": overlapping_snapshots,
     "snapshots": long_snapshots,
     "concurrency": concurrent_inserts,
     "fillfactor": fillfactor_sweep,
