@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16.4-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 2](https://img.shields.io/badge/phase-2%20storage%20analysis-informational)
+![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16.4-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 3](https://img.shields.io/badge/phase-3%20visualization-informational)
 
 </div>
 
@@ -16,6 +16,7 @@ uv sync
 uv run pytest -v
 uv run python -m pagereuse run --rows 10000 --fillfactor 100
 uv run python -m pagereuse suite fillfactor
+uv run python -m pagereuse serve        # viewer at http://127.0.0.1:8765
 ```
 
 Each run writes `results/<run_id>/result.json` (config, environment, methodology, per-checkpoint metrics) and `results/<run_id>/pages.csv` (one row per page per checkpoint). A suite also writes `results/comparison_<suite>_<stamp>.csv` with one row per run and checkpoint.
@@ -50,6 +51,10 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `fsm` | `pg_freespace(rel, blkno)` | Recorded value in 32-byte categories, rounded down when written. Written by VACUUM and when an inserter leaves a full page; later inserts do not update it, so it can overstate free space |
 | `estimated` | `pg_class.relpages/reltuples`, `pg_stat_user_tables` | Planner estimates and cumulative stats |
 
+## Viewer
+
+`pagereuse serve` reads `results/` and serves a dependency-free viewer: a run list grouped by suite, a step strip of page counts, a heatmap with one cell per heap page in file order (colour by measured free bytes, FSM record, FSM minus measured, dead or redirect line pointers, xmax set, all-visible flag), per-page hover details, and an overlay chart of page counts across ticked runs.
+
 ## Assumptions and limitations
 
 - Autovacuum is disabled on experiment tables; every phase uses a fresh backend.
@@ -57,4 +62,5 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 - `pgstattuple` scans the heap and can opportunistically prune pages. Page metrics are read before it, and pages it changed are listed in `observer_effect`.
 - `normal_xmax_set` counts tuple headers with a nonzero xmax. It is a raw header observation, not a visibility judgment.
 - In `cycles`, the live row count is constant by construction, so page growth there is reuse failure and not data growth. An earlier stride-based variant grew because it deleted fewer rows each cycle; it was removed for that reason.
+- VACUUM truncates trailing empty pages. With oldest-first churn the relation can shrink at a VACUUM step and regrow on the next insert; that is truncation plus fresh extension, not reuse.
 - Destructive SQL runs only in database `pagereuse_lab` and on tables matching `^prl_[a-z0-9_]+$`.

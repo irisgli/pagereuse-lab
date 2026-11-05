@@ -125,3 +125,15 @@ def test_comparison_csv(cyc, tmp_path):
     assert tuple(rows[0]) == COMPARISON_COLUMNS
     assert len(rows) == sum(len(r["checkpoints"]) for r in cyc.values())
     assert {r["label"] for r in rows} == set(cyc)
+
+
+def test_vacuum_truncates_empty_tail_only_for_oldest_first_churn(cyc):
+    """Oldest-first churn: cycle 1 frees the head pages, reinserts refill them,
+    so cycle 2's oldest rows sit in the tail and VACUUM truncates it. Random
+    churn never empties the tail, so VACUUM never shrinks the file."""
+    oldest = cyc["cycles vacuum oldest"]
+    vac_pages = [pages(oldest, i) for i, c in enumerate(oldest["checkpoints"]) if c["operation"]["op"] == "vacuum"]
+    assert min(vac_pages) < pages(oldest, 0)
+    assert oldest["summary"]["final_pages"] == pages(oldest, 0)
+    rand = cyc["cycles vacuum random"]
+    assert {pages(rand, i) for i in range(len(rand["checkpoints"]))} == {pages(rand, 0)}

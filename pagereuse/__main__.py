@@ -1,6 +1,7 @@
 """CLI:
     python -m pagereuse run   [options]        one experiment
     python -m pagereuse suite <name> [options] a named comparison suite
+    python -m pagereuse serve [options]        results viewer at http://127.0.0.1:8765
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from .experiment import ExperimentConfig, run
 from .export import write_comparison, write_result
+from .server import serve
 from .suites import SUITES
 
 
@@ -37,7 +39,14 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--rows", type=int, default=d.rows)
     s.add_argument("--out", type=Path, default=Path("results"))
 
+    v = sub.add_parser("serve", help="serve the results viewer")
+    v.add_argument("--results", type=Path, default=Path("results"))
+    v.add_argument("--port", type=int, default=8765)
+
     args = p.parse_args(argv)
+    if args.cmd == "serve":
+        serve(args.results, port=args.port)
+        return
     if args.cmd == "run":
         kw = vars(args).copy()
         kw.pop("cmd")

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PageReuse Lab</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1>PageReuse Lab</h1>
+  <p class="tag">Each cell is one 8 kB heap page, drawn in file order.</p>
+</header>
+
+<div class="layout">
+  <aside class="runs">
+    <div class="runs-head">
+      <h2>Runs</h2>
+      <span id="run-count" class="muted"></span>
+    </div>
+    <ul id="run-list" class="run-list"></ul>
+    <p id="runs-empty" class="empty" hidden>No results yet. Run <code>python -m pagereuse suite fillfactor</code> and reload.</p>
+  </aside>
+
+  <main class="detail">
+    <section id="run-panel" hidden>
+      <div class="run-head">
+        <h2 id="run-title"></h2>
+        <p id="run-config" class="muted"></p>
+      </div>
+
+      <div class="steps-wrap">
+        <h3>Pages after each step</h3>
+        <div id="steps" class="steps" role="tablist" aria-label="Checkpoints"></div>
+      </div>
+
+      <div class="heat-head">
+        <h3 id="heat-title"></h3>
+        <label class="metric">Colour by
+          <select id="metric">
+            <option value="exact_free">free bytes, measured</option>
+            <option value="fsm">free bytes, FSM record</option>
+            <option value="fsm_gap">FSM minus measured</option>
+            <option value="lp_dead">dead line pointers</option>
+            <option value="lp_redirect">redirect line pointers</option>
+            <option value="normal_xmax_set">tuples with xmax set</option>
+            <option value="all_visible">all-visible flag</option>
+          </select>
+        </label>
+      </div>
+      <div class="heat-wrap">
+        <canvas id="heat" aria-label="Page heatmap"></canvas>
+        <div id="legend" class="legend"></div>
+      </div>
+      <div id="tip" class="tip" hidden></div>
+
+      <dl id="facts" class="facts"></dl>
+    </section>
+
+    <section class="compare">
+      <div class="compare-head">
+        <h3>Compare page counts</h3>
+        <p class="muted">Tick runs in the list to overlay them.</p>
+      </div>
+      <svg id="compare" class="compare-chart" viewBox="0 0 720 260" role="img" aria-label="Main pages per step for selected runs"></svg>
+      <ul id="compare-legend" class="compare-legend"></ul>
+    </section>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
