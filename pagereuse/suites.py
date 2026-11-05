@@ -18,8 +18,7 @@ def _cycle(rows: int, vacuum: bool, pattern: str) -> list[dict]:
     if vacuum:
         body.append({"op": "vacuum"})
     body.append({"op": "insert", "rows": rows // 2})
-    return [{"op": "insert", "rows": rows},
-            {"op": "repeat", "times": REPEAT_CYCLES, "steps": body}]
+    return [{"op": "insert", "rows": rows}, {"op": "repeat", "times": REPEAT_CYCLES, "steps": body}]
 
 
 def _update(rows: int, column: str, grow: int = 0) -> list[dict]:
@@ -35,8 +34,13 @@ def _update(rows: int, column: str, grow: int = 0) -> list[dict]:
 def fillfactor_sweep(rows: int) -> list[ExperimentConfig]:
     """Same HOT-eligible update workload at different fillfactors."""
     return [
-        ExperimentConfig(table=f"prl_ff{ff}", fillfactor=ff, rows=rows,
-                         label=f"fillfactor={ff}", steps=_update(rows, "payload"))
+        ExperimentConfig(
+            table=f"prl_ff{ff}",
+            fillfactor=ff,
+            rows=rows,
+            label=f"fillfactor={ff}",
+            steps=_update(rows, "payload"),
+        )
         for ff in (100, 90, 70)
     ]
 
@@ -44,26 +48,57 @@ def fillfactor_sweep(rows: int) -> list[ExperimentConfig]:
 def update_patterns(rows: int) -> list[ExperimentConfig]:
     """HOT-eligible vs indexed-column vs growing updates, fillfactor 90."""
     return [
-        ExperimentConfig(table="prl_upd_payload", fillfactor=90, rows=rows,
-                         label="update payload (HOT-eligible)", steps=_update(rows, "payload")),
-        ExperimentConfig(table="prl_upd_tag", fillfactor=90, rows=rows,
-                         label="update indexed tag (never HOT)", steps=_update(rows, "tag")),
-        ExperimentConfig(table="prl_upd_grow", fillfactor=90, rows=rows,
-                         label="update payload +100 bytes", steps=_update(rows, "payload", 100)),
+        ExperimentConfig(
+            table="prl_upd_payload",
+            fillfactor=90,
+            rows=rows,
+            label="update payload (HOT-eligible)",
+            steps=_update(rows, "payload"),
+        ),
+        ExperimentConfig(
+            table="prl_upd_tag",
+            fillfactor=90,
+            rows=rows,
+            label="update indexed tag (never HOT)",
+            steps=_update(rows, "tag"),
+        ),
+        ExperimentConfig(
+            table="prl_upd_grow",
+            fillfactor=90,
+            rows=rows,
+            label="update payload +100 bytes",
+            steps=_update(rows, "payload", 100),
+        ),
     ]
 
 
 def delete_cycles(rows: int) -> list[ExperimentConfig]:
     """Repeated delete/reinsert cycles: with and without VACUUM, random vs oldest-first."""
     return [
-        ExperimentConfig(table="prl_cyc_vac_rand", rows=rows, label="cycles vacuum random",
-                         steps=_cycle(rows, True, "random")),
-        ExperimentConfig(table="prl_cyc_novac_rand", rows=rows, label="cycles no-vacuum random",
-                         steps=_cycle(rows, False, "random")),
-        ExperimentConfig(table="prl_cyc_vac_old", rows=rows, label="cycles vacuum oldest",
-                         steps=_cycle(rows, True, "oldest")),
-        ExperimentConfig(table="prl_cyc_novac_old", rows=rows, label="cycles no-vacuum oldest",
-                         steps=_cycle(rows, False, "oldest")),
+        ExperimentConfig(
+            table="prl_cyc_vac_rand",
+            rows=rows,
+            label="cycles vacuum random",
+            steps=_cycle(rows, True, "random"),
+        ),
+        ExperimentConfig(
+            table="prl_cyc_novac_rand",
+            rows=rows,
+            label="cycles no-vacuum random",
+            steps=_cycle(rows, False, "random"),
+        ),
+        ExperimentConfig(
+            table="prl_cyc_vac_old",
+            rows=rows,
+            label="cycles vacuum oldest",
+            steps=_cycle(rows, True, "oldest"),
+        ),
+        ExperimentConfig(
+            table="prl_cyc_novac_old",
+            rows=rows,
+            label="cycles no-vacuum oldest",
+            steps=_cycle(rows, False, "oldest"),
+        ),
     ]
 
 

@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16.4-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 4](https://img.shields.io/badge/phase-4%20predictive%20modeling-informational)
+[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16.4-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 5](https://img.shields.io/badge/phase-5%20engineering%20quality-informational)
 
 </div>
 
@@ -18,6 +18,7 @@ uv run python -m pagereuse run --rows 10000 --fillfactor 100
 uv run python -m pagereuse suite fillfactor
 uv run python -m pagereuse serve        # viewer at http://127.0.0.1:8765
 uv run python -m pagereuse evaluate     # score size predictors on results/
+scripts/bench.sh                        # all suites at 10k rows + evaluation, fixed seeds
 ```
 
 Each run writes `results/<run_id>/result.json` (config, environment, methodology, per-checkpoint metrics) and `results/<run_id>/pages.csv` (one row per page per checkpoint). A suite also writes `results/comparison_<suite>_<stamp>.csv` with one row per run and checkpoint.
@@ -70,6 +71,8 @@ On the three suites at 2000 rows the capacity model is exact on every insert, de
 
 ## Assumptions and limitations
 
+The full account is in [docs/methodology.md](docs/methodology.md). In short:
+
 - Autovacuum is disabled on experiment tables; every phase uses a fresh backend.
 - `exact_free_bytes` is unused space between line pointers and tuples. It is not all reusable: a new tuple also needs a 4-byte line pointer, and fillfactor reserves space that INSERT will not use.
 - `pgstattuple` scans the heap and can opportunistically prune pages. Page metrics are read before it, and pages it changed are listed in `observer_effect`.
@@ -77,3 +80,13 @@ On the three suites at 2000 rows the capacity model is exact on every insert, de
 - In `cycles`, the live row count is constant by construction, so page growth there is reuse failure and not data growth. An earlier stride-based variant grew because it deleted fewer rows each cycle; it was removed for that reason.
 - VACUUM truncates trailing empty pages. With oldest-first churn the relation can shrink at a VACUUM step and regrow on the next insert; that is truncation plus fresh extension, not reuse.
 - Destructive SQL runs only in database `pagereuse_lab` and on tables matching `^prl_[a-z0-9_]+$`.
+
+## Development
+
+```bash
+uv sync
+uv run ruff check . && uv run ruff format --check .
+uv run pytest -q
+```
+
+CI runs the same three commands against a `postgres:16.4` service container on every push and pull request.

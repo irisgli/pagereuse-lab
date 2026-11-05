@@ -58,7 +58,7 @@ def predict_linear_trend(history: list[int], prev: dict, op: dict, env: dict, cf
     xs = range(n)
     mx, my = (n - 1) / 2, sum(history) / n
     sxx = sum((x - mx) ** 2 for x in xs)
-    slope = sum((x - mx) * (y - my) for x, y in zip(xs, history)) / sxx
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, history, strict=True)) / sxx
     return max(0, round(my + slope * (n - mx)))
 
 
@@ -93,7 +93,7 @@ def predict_capacity(history: list[int], prev: dict, op: dict, env: dict, cfg: d
         live = [p["lp_normal"] - p["normal_xmax_set"] for p in pages]
         per_page = _proportional(n, live)
         placed = 0
-        for p, u in zip(pages, per_page):
+        for p, u in zip(pages, per_page, strict=True):
             free = p["exact_free_bytes"] + p["normal_xmax_set"] * old_len
             placed += min(u, free // footprint)
         n -= placed
@@ -140,11 +140,18 @@ def evaluate_run(result: dict) -> list[dict]:
         actual = cps[i]["relation"]["exact"]["main_pages"]
         for name, fn in PREDICTORS.items():
             pred = fn(history, cps[i - 1], cps[i]["operation"], env, cfg)
-            rows.append({
-                "run_id": result["run_id"], "label": cfg.get("label") or cfg["table"],
-                "step": i, "op": cps[i]["operation"]["op"], "predictor": name,
-                "predicted": pred, "actual": actual, "error": pred - actual,
-            })
+            rows.append(
+                {
+                    "run_id": result["run_id"],
+                    "label": cfg.get("label") or cfg["table"],
+                    "step": i,
+                    "op": cps[i]["operation"]["op"],
+                    "predictor": name,
+                    "predicted": pred,
+                    "actual": actual,
+                    "error": pred - actual,
+                }
+            )
     return rows
 
 
@@ -155,11 +162,15 @@ def summarize(rows: list[dict]) -> list[dict]:
         errs = [abs(r["error"]) for r in rows if r["predictor"] == name]
         if not errs:
             continue
-        out.append({
-            "predictor": name, "n": len(errs),
-            "mae": sum(errs) / len(errs), "max_abs_error": max(errs),
-            "exact_rate": sum(1 for e in errs if e == 0) / len(errs),
-        })
+        out.append(
+            {
+                "predictor": name,
+                "n": len(errs),
+                "mae": sum(errs) / len(errs),
+                "max_abs_error": max(errs),
+                "exact_rate": sum(1 for e in errs if e == 0) / len(errs),
+            }
+        )
     return out
 
 

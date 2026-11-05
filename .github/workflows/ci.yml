@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_USER: pagereuse
+          POSTGRES_PASSWORD: pagereuse
+          POSTGRES_DB: pagereuse_lab
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U pagereuse -d pagereuse_lab"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+        env:
+          PAGEREUSE_DSN: postgresql://pagereuse:pagereuse@127.0.0.1:55432/pagereuse_lab

@@ -1,8 +1,8 @@
 """Results viewer: a stdlib HTTP server exposing result files as JSON plus a static UI.
 
-    GET /api/runs            index of runs in the results directory
-    GET /api/runs/<run_id>   full result.json for one run
-    GET /                    the viewer (pagereuse/web/)
+GET /api/runs            index of runs in the results directory
+GET /api/runs/<run_id>   full result.json for one run
+GET /                    the viewer (pagereuse/web/)
 """
 
 from __future__ import annotations
@@ -24,17 +24,19 @@ def index_runs(results_dir: Path) -> list[dict]:
         if not _RUN_ID.match(path.parent.name):
             continue
         r = json.loads(path.read_text())
-        runs.append({
-            "run_id": r["run_id"],
-            "started_at": r["started_at"],
-            "label": r["config"].get("label") or r["config"]["table"],
-            "table": r["config"]["table"],
-            "fillfactor": r["config"]["fillfactor"],
-            "rows": r["config"]["rows"],
-            "steps": [c["name"] for c in r["checkpoints"]],
-            "main_pages": [c["relation"]["exact"]["main_pages"] for c in r["checkpoints"]],
-            "summary": r["summary"],
-        })
+        runs.append(
+            {
+                "run_id": r["run_id"],
+                "started_at": r["started_at"],
+                "label": r["config"].get("label") or r["config"]["table"],
+                "table": r["config"]["table"],
+                "fillfactor": r["config"]["fillfactor"],
+                "rows": r["config"]["rows"],
+                "steps": [c["name"] for c in r["checkpoints"]],
+                "main_pages": [c["relation"]["exact"]["main_pages"] for c in r["checkpoints"]],
+                "summary": r["summary"],
+            }
+        )
     runs.sort(key=lambda r: r["started_at"], reverse=True)
     return runs
 
@@ -56,7 +58,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/runs":
             return self._json(index_runs(self.results_dir))
         if path.startswith("/api/runs/"):
-            run = load_run(self.results_dir, path[len("/api/runs/"):])
+            run = load_run(self.results_dir, path[len("/api/runs/") :])
             if run is None:
                 return self._json({"error": "run not found"}, HTTPStatus.NOT_FOUND)
             return self._json(run)

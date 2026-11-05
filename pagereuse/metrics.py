@@ -66,18 +66,20 @@ ORDER BY b.blkno
 
 def _row(cur) -> dict:
     cols = [d.name for d in cur.description]
-    return dict(zip(cols, cur.fetchone()))
+    return dict(zip(cols, cur.fetchone(), strict=True))
 
 
 def relation_metrics(conn: Connection, table: str) -> dict:
     rel = check_table_name(table)
-    sizes = _row(conn.execute(
-        """SELECT current_setting('block_size')::int AS block_size,
+    sizes = _row(
+        conn.execute(
+            """SELECT current_setting('block_size')::int AS block_size,
                   pg_relation_size(%(r)s::regclass, 'main') AS main_bytes,
                   pg_relation_size(%(r)s::regclass, 'fsm')  AS fsm_bytes,
                   pg_relation_size(%(r)s::regclass, 'vm')   AS vm_bytes""",
-        {"r": rel},
-    ))
+            {"r": rel},
+        )
+    )
     sizes["main_pages"] = sizes["main_bytes"] // sizes["block_size"]
 
     tuples = _row(conn.execute("SELECT * FROM pgstattuple(%s::regclass)", (rel,)))
@@ -86,14 +88,16 @@ def relation_metrics(conn: Connection, table: str) -> dict:
     # the cumulative counters reflect the work we just did.
     conn.execute("SELECT pg_stat_force_next_flush()")
     conn.execute("SELECT pg_stat_clear_snapshot()")
-    est = _row(conn.execute(
-        """SELECT c.relpages, c.reltuples,
+    est = _row(
+        conn.execute(
+            """SELECT c.relpages, c.reltuples,
                   s.n_live_tup, s.n_dead_tup, s.n_tup_ins, s.n_tup_del,
                   s.n_tup_upd, s.n_tup_hot_upd, s.vacuum_count
            FROM pg_class c JOIN pg_stat_user_tables s ON s.relid = c.oid
            WHERE c.oid = %s::regclass""",
-        (rel,),
-    ))
+            (rel,),
+        )
+    )
 
     return {
         "exact": {**sizes, **{f"pgstattuple_{k}": v for k, v in tuples.items()}},
@@ -105,5 +109,4 @@ def page_metrics(conn: Connection, table: str) -> list[dict]:
     rel = check_table_name(table)
     cur = conn.execute(_PAGES_SQL, {"rel": rel})
     cols = [d.name for d in cur.description]
-    return [dict(zip(cols, r)) for r in cur.fetchall()]
-
+    return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]

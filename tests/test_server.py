@@ -64,7 +64,7 @@ def test_api_rejects_bad_run_ids(base_url, bad):
 
 
 def test_static_ui_served(base_url):
-    for name, needle in (("", b"<canvas id=\"heat\""), ("app.js", b"renderHeat"), ("style.css", b"--accent")):
+    for name, needle in (("", b'<canvas id="heat"'), ("app.js", b"renderHeat"), ("style.css", b"--accent")):
         status, _, body = get(f"{base_url}/{name}")
         assert status == 200 and needle in body, name
     assert (WEB_DIR / "index.html").is_file()

@@ -39,10 +39,8 @@ def exact(result, name, key):
 
 
 def test_checkpoints_present(vac, novac):
-    assert [c["name"] for c in vac["checkpoints"]] == [
-        "00_insert", "01_delete", "02_vacuum", "03_insert"]
-    assert [c["name"] for c in novac["checkpoints"]] == [
-        "00_insert", "01_delete", "02_insert"]
+    assert [c["name"] for c in vac["checkpoints"]] == ["00_insert", "01_delete", "02_vacuum", "03_insert"]
+    assert [c["name"] for c in novac["checkpoints"]] == ["00_insert", "01_delete", "02_insert"]
     assert vac["environment"]["server_version"].startswith("16")
     assert vac["environment"]["block_size"] == 8192
 
@@ -70,8 +68,7 @@ def test_delete_marks_tuples_without_freeing_space(vac):
     deleted = dele["operation"]["rows"]
     assert sum(p["normal_xmax_set"] for p in dele["pages"]) == deleted
     assert dele["relation"]["exact"]["pgstattuple_dead_tuple_count"] == deleted
-    assert [p["exact_free_bytes"] for p in dele["pages"]] == [
-        p["exact_free_bytes"] for p in load["pages"]]
+    assert [p["exact_free_bytes"] for p in dele["pages"]] == [p["exact_free_bytes"] for p in load["pages"]]
 
 
 def test_fsm_after_load_records_pages_the_inserter_left(vac):
@@ -118,7 +115,7 @@ def test_vacuum_enables_reuse_relative_to_no_vacuum(vac, novac):
 
 def test_same_seed_gives_identical_physical_layout(vac):
     again = run(ExperimentConfig(table="prl_test_vac", rows=ROWS, seed=7))
-    for a, b in zip(vac["checkpoints"], again["checkpoints"]):
+    for a, b in zip(vac["checkpoints"], again["checkpoints"], strict=True):
         assert a["pages"] == b["pages"], a["name"]
 
 

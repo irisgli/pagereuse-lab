@@ -8,7 +8,7 @@ import csv
 
 import pytest
 
-from pagereuse.experiment import ExperimentConfig, _expand, run
+from pagereuse.experiment import ExperimentConfig, _expand
 from pagereuse.export import COMPARISON_COLUMNS, write_comparison
 
 ROWS = 2000
@@ -23,8 +23,12 @@ def total(r, i, key):
 
 
 def test_repeat_expands_in_order():
-    steps = _expand([{"op": "insert", "rows": 1},
-                     {"op": "repeat", "times": 2, "steps": [{"op": "vacuum"}, {"op": "insert", "rows": 2}]}])
+    steps = _expand(
+        [
+            {"op": "insert", "rows": 1},
+            {"op": "repeat", "times": 2, "steps": [{"op": "vacuum"}, {"op": "insert", "rows": 2}]},
+        ]
+    )
     assert [s["op"] for s in steps] == ["insert", "vacuum", "insert", "vacuum", "insert"]
 
 
@@ -55,7 +59,8 @@ def test_hot_updates_leave_redirect_line_pointers_after_prune(ff):
     f70 = ff["fillfactor=70"]
     # Second round of updates prunes the first round's dead versions in place.
     assert total(f70, 2, "lp_redirect_total") > 0
-    assert total(f70, 2, "lp_redirect_total") == f70["checkpoints"][1]["relation"]["estimated"]["n_tup_hot_upd"]
+    first_round_hot = f70["checkpoints"][1]["relation"]["estimated"]["n_tup_hot_upd"]
+    assert total(f70, 2, "lp_redirect_total") == first_round_hot
 
 
 def test_indexed_column_update_is_never_hot(upd):
@@ -78,8 +83,11 @@ def test_growing_tuples_need_more_pages(upd):
 def test_vacuum_after_each_cycle_holds_size_constant(cyc):
     for label in ("cycles vacuum random", "cycles vacuum oldest"):
         r = cyc[label]
-        live = [c["relation"]["exact"]["pgstattuple_tuple_count"] for c in r["checkpoints"]
-                if c["operation"]["op"] == "insert"]
+        live = [
+            c["relation"]["exact"]["pgstattuple_tuple_count"]
+            for c in r["checkpoints"]
+            if c["operation"]["op"] == "insert"
+        ]
         assert set(live) == {ROWS}, label
         assert r["summary"]["peak_pages"] == pages(r, 0), label
 
@@ -112,7 +120,9 @@ def test_vacuum_truncates_empty_tail_only_for_oldest_first_churn(cyc):
     so cycle 2's oldest rows sit in the tail and VACUUM truncates it. Random
     churn never empties the tail, so VACUUM never shrinks the file."""
     oldest = cyc["cycles vacuum oldest"]
-    vac_pages = [pages(oldest, i) for i, c in enumerate(oldest["checkpoints"]) if c["operation"]["op"] == "vacuum"]
+    vac_pages = [
+        pages(oldest, i) for i, c in enumerate(oldest["checkpoints"]) if c["operation"]["op"] == "vacuum"
+    ]
     assert min(vac_pages) < pages(oldest, 0)
     assert oldest["summary"]["final_pages"] == pages(oldest, 0)
     rand = cyc["cycles vacuum random"]

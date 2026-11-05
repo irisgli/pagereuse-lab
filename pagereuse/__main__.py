@@ -1,15 +1,15 @@
 """CLI:
-    python -m pagereuse run   [options]        one experiment
-    python -m pagereuse suite <name> [options] a named comparison suite
-    python -m pagereuse serve [options]        results viewer at http://127.0.0.1:8765
-    python -m pagereuse evaluate [options]     score size predictors on saved results
+python -m pagereuse run   [options]        one experiment
+python -m pagereuse suite <name> [options] a named comparison suite
+python -m pagereuse serve [options]        results viewer at http://127.0.0.1:8765
+python -m pagereuse evaluate [options]     score size predictors on saved results
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .experiment import ExperimentConfig, run
@@ -56,7 +56,10 @@ def main(argv: list[str] | None = None) -> None:
         rows, summary = write_evaluation(results, args.results / "model_eval.csv")
         print(f"{'predictor':14s} {'n':>5s} {'MAE':>8s} {'max':>6s} {'exact':>7s}")
         for s_ in summary:
-            print(f"{s_['predictor']:14s} {s_['n']:5d} {s_['mae']:8.2f} {s_['max_abs_error']:6d} {s_['exact_rate']:7.0%}")
+            print(
+                f"{s_['predictor']:14s} {s_['n']:5d} {s_['mae']:8.2f} "
+                f"{s_['max_abs_error']:6d} {s_['exact_rate']:7.0%}"
+            )
         print(f"rows: {len(rows)} -> {args.results / 'model_eval.csv'}")
         return
     if args.cmd == "serve":
@@ -79,11 +82,13 @@ def main(argv: list[str] | None = None) -> None:
         res = run(cfg)
         write_result(res, args.out)
         results.append(res)
-        print(f"{cfg.label:40s} pages first/peak/final "
-              f"{res['checkpoints'][0]['relation']['exact']['main_pages']}/"
-              f"{res['summary']['peak_pages']}/{res['summary']['final_pages']}  "
-              f"hot {res['summary']['hot_updates']}/{res['summary']['updates']}")
-    stamp = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+        print(
+            f"{cfg.label:40s} pages first/peak/final "
+            f"{res['checkpoints'][0]['relation']['exact']['main_pages']}/"
+            f"{res['summary']['peak_pages']}/{res['summary']['final_pages']}  "
+            f"hot {res['summary']['hot_updates']}/{res['summary']['updates']}"
+        )
+    stamp = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}"
     path = write_comparison(results, args.out / f"comparison_{args.name}_{stamp}.csv")
     print(f"comparison: {path}")
 

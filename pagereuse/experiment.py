@@ -33,8 +33,8 @@ from __future__ import annotations
 import random
 import string
 import uuid
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 
 from psycopg import sql
 
@@ -82,8 +82,9 @@ class ExperimentConfig:
             _validate_step(s)
 
     def resolved_steps(self) -> list[dict]:
-        steps = self.steps if self.steps is not None else default_steps(
-            self.rows, self.delete_every, self.vacuum)
+        steps = (
+            self.steps if self.steps is not None else default_steps(self.rows, self.delete_every, self.vacuum)
+        )
         return _expand(steps)
 
 
@@ -135,7 +136,7 @@ def _measure(conninfo, table: str, idx: int, operation: dict) -> dict:
         pages = metrics.page_metrics(conn, table)
         rel = metrics.relation_metrics(conn, table)  # runs pgstattuple (may prune)
         after = metrics.page_metrics(conn, table)
-    changed = [b["blkno"] for b, a in zip(pages, after) if a != b]
+    changed = [b["blkno"] for b, a in zip(pages, after, strict=True) if a != b]
     rel["fsm"] = {
         "fsm_total_avail_bytes": sum(p["fsm_avail_bytes"] for p in pages),
         "pages_with_fsm_space": sum(1 for p in pages if p["fsm_avail_bytes"] > 0),
@@ -169,11 +170,14 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
     with db.connect(conninfo) as conn:
         if op == "insert":
             n = int(s["rows"])
-            rows = [(st.next_id + i, (st.next_id + i) % 97, p)
-                    for i, p in enumerate(_payloads(rng, n, cfg.payload_bytes))]
+            rows = [
+                (st.next_id + i, (st.next_id + i) % 97, p)
+                for i, p in enumerate(_payloads(rng, n, cfg.payload_bytes))
+            ]
             with conn.transaction(), conn.cursor() as cur:
                 cur.executemany(
-                    sql.SQL("INSERT INTO {} (id, tag, payload) VALUES (%s, %s, %s)").format(t), rows)
+                    sql.SQL("INSERT INTO {} (id, tag, payload) VALUES (%s, %s, %s)").format(t), rows
+                )
             for i, _, p in rows:
                 st.live[i] = len(p)
             st.next_id += n
@@ -202,8 +206,13 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
                 cnt = len(new)
                 for p, i in new:
                     st.live[i] = len(p)
-            return {"op": op, "rows": cnt, "column": col, "grow_bytes": grow,
-                    "pattern": s.get("pattern", "stride")}
+            return {
+                "op": op,
+                "rows": cnt,
+                "column": col,
+                "grow_bytes": grow,
+                "pattern": s.get("pattern", "stride"),
+            }
 
         if op == "vacuum":
             conn.execute(sql.SQL("VACUUM {}").format(t))
@@ -231,8 +240,9 @@ def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
             ).format(t, sql.Literal(cfg.fillfactor))
         )
         if cfg.index_tag:
-            conn.execute(sql.SQL("CREATE INDEX {} ON {} (tag)").format(
-                sql.Identifier(f"{cfg.table}_tag_idx"), t))
+            conn.execute(
+                sql.SQL("CREATE INDEX {} ON {} (tag)").format(sql.Identifier(f"{cfg.table}_tag_idx"), t)
+            )
 
     st = _State()
     checkpoints = []
@@ -243,8 +253,8 @@ def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
     pages = [c["relation"]["exact"]["main_pages"] for c in checkpoints]
     return {
         "schema_version": SCHEMA_VERSION,
-        "run_id": f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:6]}",
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "run_id": f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:6]}",
+        "started_at": datetime.now(UTC).isoformat(),
         "config": asdict(cfg),
         "steps": steps,
         "environment": {"server_version": server_version, "block_size": block_size},
@@ -258,7 +268,7 @@ def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
             "tuple_stats": "pgstattuple (exact scan; may prune, see observer_effect)",
         },
         "summary": {
-            "main_pages": {c["name"]: p for c, p in zip(checkpoints, pages)},
+            "main_pages": {c["name"]: p for c, p in zip(checkpoints, pages, strict=True)},
             "peak_pages": max(pages),
             "final_pages": pages[-1],
             "growth_vs_first_pages": pages[-1] - pages[0],

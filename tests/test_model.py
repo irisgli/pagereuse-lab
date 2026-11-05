@@ -9,18 +9,30 @@ from __future__ import annotations
 import csv
 
 from pagereuse.model import (
-    PREDICTORS, _proportional, evaluate_run, predict_linear_trend, summarize,
-    tuple_footprint, write_evaluation,
+    PREDICTORS,
+    _proportional,
+    evaluate_run,
+    predict_linear_trend,
+    summarize,
+    tuple_footprint,
+    write_evaluation,
 )
 
 
 def _rows(results, predictor, ops=None):
-    return [r for res in results for r in evaluate_run(res)
-            if r["predictor"] == predictor and (ops is None or r["op"] in ops)]
+    return [
+        r
+        for res in results
+        for r in evaluate_run(res)
+        if r["predictor"] == predictor and (ops is None or r["op"] in ops)
+    ]
 
 
 def test_tuple_footprint_is_aligned_length_plus_line_pointer():
-    pages = [{"lp_normal": 34, "normal_tuple_bytes": 34 * 232}, {"lp_normal": 2, "normal_tuple_bytes": 2 * 230}]
+    pages = [
+        {"lp_normal": 34, "normal_tuple_bytes": 34 * 232},
+        {"lp_normal": 2, "normal_tuple_bytes": 2 * 230},
+    ]
     assert tuple_footprint(pages) == 232 + 4  # mean 231.9 aligns up to 232
 
 
@@ -48,8 +60,12 @@ def test_capacity_predicts_vacuum_truncation(cyc):
 
 
 def test_capacity_exact_for_first_update_round(ff, upd):
-    rows = [x for res in list(ff.values()) + list(upd.values()) for x in evaluate_run(res)
-            if x["predictor"] == "capacity" and x["step"] == 1]
+    rows = [
+        x
+        for res in list(ff.values()) + list(upd.values())
+        for x in evaluate_run(res)
+        if x["predictor"] == "capacity" and x["step"] == 1
+    ]
     assert rows and all(x["op"] == "update" and x["error"] == 0 for x in rows), rows
 
 
