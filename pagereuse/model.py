@@ -98,7 +98,8 @@ def predict_capacity(history: list[int], prev: dict, op: dict, env: dict, cfg: d
     if kind == "vacuum":
         # VACUUM removes only versions older than the xmin horizon; the page
         # record counted those at measurement time.
-        live = [p["lp_normal"] - p["dead_removable"] for p in pages]
+        # Results written before dead_removable existed fall back to every xmax-set tuple.
+        live = [p["lp_normal"] - p.get("dead_removable", p["normal_xmax_set"]) for p in pages]
         trailing_empty = 0
         for n in reversed(live):
             if n > 0:

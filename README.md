@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 11](https://img.shields.io/badge/phase-11%20indexes%20and%20TOAST-informational)
+[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 12](https://img.shields.io/badge/phase-12%20visualization-informational)
 
 </div>
 
@@ -68,7 +68,7 @@ Each page record also carries `dead_removable`: deleted versions older than the 
 
 ## Viewer
 
-`pagereuse serve` reads `results/` and serves a dependency-free viewer: a run list grouped by suite, a step strip of page counts, a heatmap with one cell per heap page in file order (colour by measured free bytes, FSM record, FSM minus measured, dead or redirect line pointers, xmax set, all-visible flag), per-page hover details, and an overlay chart of page counts across ticked runs.
+`pagereuse serve` reads `results/` and serves a dependency-free viewer: a run list grouped by suite, a step strip of page counts with the capacity model's prediction drawn on each step and its error shown, a heatmap with one cell per heap page in file order (colour by measured free bytes, FSM record, FSM minus measured, dead or redirect line pointers, xmax set, all-visible flag, live tuples, or change since the previous step with new pages in amber), per-page hover details, index and TOAST facts, and an overlay chart of page counts across ticked runs with the model's predictions dashed.
 
 ## Predicting growth
 

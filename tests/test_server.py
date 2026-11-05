@@ -56,6 +56,18 @@ def test_api_runs_and_run(base_url):
     assert full["checkpoints"][0]["pages"][0]["blkno"] == 0
 
 
+def test_api_predictions(base_url):
+    _, _, body = get(f"{base_url}/api/runs")
+    run_id = json.loads(body)[0]["run_id"]
+    _, _, body = get(f"{base_url}/api/runs/{run_id}/predictions")
+    rows = json.loads(body)
+    assert {r["predictor"] for r in rows} == {"last_value", "linear_trend", "capacity"}
+    assert {r["step"] for r in rows} == {1, 2, 3}
+    assert all({"predicted", "actual", "error"} <= set(r) for r in rows)
+    with pytest.raises(urllib.error.HTTPError):
+        get(f"{base_url}/api/runs/{run_id}/other")
+
+
 @pytest.mark.parametrize("bad", ["nope", "../etc/passwd", "20000101T000000Z-zzzzzz"])
 def test_api_rejects_bad_run_ids(base_url, bad):
     with pytest.raises(urllib.error.HTTPError) as e:

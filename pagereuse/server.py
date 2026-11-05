@@ -2,6 +2,7 @@
 
 GET /api/runs            index of runs in the results directory
 GET /api/runs/<run_id>   full result.json for one run
+GET /api/runs/<run_id>/predictions   one-step-ahead predictions of every predictor for that run
 GET /                    the viewer (pagereuse/web/)
 """
 
@@ -13,6 +14,8 @@ from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from .model import evaluate_run
 
 WEB_DIR = Path(__file__).parent / "web"
 _RUN_ID = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$")
@@ -58,9 +61,17 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/runs":
             return self._json(index_runs(self.results_dir))
         if path.startswith("/api/runs/"):
-            run = load_run(self.results_dir, path[len("/api/runs/") :])
-            if run is None:
+            run_id, _, tail = path[len("/api/runs/") :].partition("/")
+            run = load_run(self.results_dir, run_id)
+            if run is None or tail not in ("", "predictions"):
                 return self._json({"error": "run not found"}, HTTPStatus.NOT_FOUND)
+            if tail == "predictions":
+                try:
+                    return self._json(evaluate_run(run))
+                except (KeyError, ValueError) as e:
+                    return self._json(
+                        {"error": f"cannot score this run: {e!r}"}, HTTPStatus.UNPROCESSABLE_ENTITY
+                    )
             return self._json(run)
         super().do_GET()
 

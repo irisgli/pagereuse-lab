@@ -4,7 +4,8 @@
   const fmt = (n) => Number(n).toLocaleString("en-US");
   const SERIES = ["#0e6f6b", "#b4482f", "#3b5b8c", "#c48a1d", "#6a4c93", "#2e8540", "#8c3b5b", "#4d6a75"];
 
-  const state = { runs: [], current: null, step: 0, metric: "exact_free", compare: new Set() };
+  const state = { runs: [], current: null, step: 0, metric: "exact_free", compare: new Set(), predictions: {} };
+  const AMBER = [196, 138, 29];
 
   // ---------- colour scales ----------
   const lerp = (a, b, t) => a + (b - a) * t;
@@ -50,6 +51,18 @@
       value: (p) => (p.all_visible ? 1 : 0), max: () => 1,
       color: (v) => (v ? hex(TEAL) : hex(EMPTY)), low: "not set", high: "set",
     },
+    live: {
+      title: "Live tuples per page (normal line pointers without xmax)",
+      value: (p) => p.lp_normal - p.normal_xmax_set, max: (bs, pages) => Math.max(1, ...pages.map((p) => p.lp_total)),
+      color: (v, max) => mix(EMPTY, FULL, v / max), low: "none", high: "page full",
+    },
+    delta_free: {
+      title: "Change in measured free bytes since the previous step (amber: page is new)",
+      value: (p, prev) => (prev ? p.exact_free_bytes - prev.exact_free_bytes : null),
+      max: (bs, pages, prevPages) => Math.max(64, ...pages.map((p, i) => (prevPages[i] ? Math.abs(p.exact_free_bytes - prevPages[i].exact_free_bytes) : 0))),
+      color: (v, max) => (v === null ? hex(AMBER) : v >= 0 ? mix(WHITE, TEAL, Math.min(1, v / max)) : mix(WHITE, RUST, Math.min(1, -v / max))),
+      diverging: true, low: "filled", high: "freed", needsPrev: true,
+    },
   };
 
   // ---------- data ----------
@@ -61,8 +74,21 @@
     if (state.runs.length && !state.current) selectRun(state.runs[0].run_id);
   }
 
+  async function predictionsFor(id) {
+    if (!state.predictions[id]) {
+      const rows = await (await fetch(`/api/runs/${id}/predictions`)).json();
+      state.predictions[id] = rows.filter((r) => r.predictor === "capacity");
+    }
+    return state.predictions[id];
+  }
+
+  function predictionAt(id, step) {
+    return (state.predictions[id] || []).find((r) => r.step === step) || null;
+  }
+
   async function selectRun(id) {
-    state.current = await (await fetch(`/api/runs/${id}`)).json();
+    const [run] = await Promise.all([(await fetch(`/api/runs/${id}`)).json(), predictionsFor(id)]);
+    state.current = run;
     state.step = state.current.checkpoints.length - 1;
     document.querySelectorAll(".run-item").forEach((el) => el.classList.toggle("active", el.dataset.id === id));
     renderRun();
@@ -148,9 +174,13 @@
       b.setAttribute("role", "tab");
       b.setAttribute("aria-selected", String(i === state.step));
       const pages = cp.relation.exact.main_pages;
-      b.innerHTML = `<span class="n">${fmt(pages)}</span><span class="bar" style="height:${Math.max(3, (pages / max) * 56)}px"></span><span></span>`;
+      const pred = predictionAt(state.current.run_id, i);
+      const err = pred ? pred.error : 0;
+      const errText = pred && err ? `<em class="${err > 0 ? "over" : "under"}">${err > 0 ? "+" : ""}${err}</em>` : "";
+      const marker = pred ? `<i class="pred" style="bottom:${Math.max(3, (pred.predicted / max) * 56)}px" title="model predicted ${fmt(pred.predicted)}"></i>` : "";
+      b.innerHTML = `<span class="n">${fmt(pages)}${errText}</span><span class="barwrap"><span class="bar" style="height:${Math.max(3, (pages / max) * 56)}px"></span>${marker}</span><span></span>`;
       b.lastChild.textContent = stepLabel(cp);
-      b.title = `${cp.name}: ${fmt(pages)} pages`;
+      b.title = pred ? `${cp.name}: ${fmt(pages)} pages, model predicted ${fmt(pred.predicted)}` : `${cp.name}: ${fmt(pages)} pages`;
       b.addEventListener("click", () => { state.step = i; renderSteps(); renderHeat(); renderFacts(); });
       wrap.appendChild(b);
     });
@@ -160,9 +190,10 @@
   function renderHeat() {
     const cp = state.current.checkpoints[state.step];
     const pages = cp.pages;
+    const prevPages = state.step > 0 ? state.current.checkpoints[state.step - 1].pages : [];
     const bs = state.current.environment.block_size;
     const m = METRICS[state.metric];
-    const max = m.max(bs, pages);
+    const max = m.max(bs, pages, prevPages);
     $("heat-title").textContent = `${stepLabel(cp)}: ${fmt(pages.length)} pages`;
 
     const canvas = $("heat");
@@ -179,7 +210,7 @@
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, rows * (cell + gap));
     pages.forEach((p, i) => {
-      ctx.fillStyle = m.color(m.value(p), max);
+      ctx.fillStyle = m.color(m.value(p, prevPages[i]), max);
       ctx.fillRect((i % cols) * (cell + gap), Math.floor(i / cols) * (cell + gap), cell, cell);
     });
     layout = { cols, cell, gap, pages };
@@ -187,7 +218,11 @@
     const ramp = m.diverging
       ? `linear-gradient(90deg, ${hex(TEAL)}, #fff, ${hex(RUST)})`
       : `linear-gradient(90deg, ${m.color(0, max)}, ${m.color(max, max)})`;
-    const range = m.diverging ? `±${fmt(max)} B` : "";
+    let range = m.diverging ? `±${fmt(max)} B` : "";
+    if (m.needsPrev) {
+      const added = pages.length - prevPages.length;
+      range += added > 0 ? `, <span class="swatch" style="background:${hex(AMBER)}"></span>${fmt(added)} new pages` : added < 0 ? `, ${fmt(-added)} pages truncated` : "";
+    }
     $("legend").innerHTML = `<span>${m.low}</span><span class="ramp" style="background:${ramp}"></span><span>${m.high} ${range}</span><span class="muted" style="margin-left:auto">${m.title}</span>`;
   }
 
@@ -205,6 +240,11 @@
       ["Line pointers", `${fmt(e.lp_dead_total)} <small>dead</small> ${fmt(e.lp_redirect_total)} <small>redirect</small> ${fmt(e.lp_unused_total)} <small>unused</small>`],
       ["Updates so far", `${fmt(s.n_tup_upd)} <small>${fmt(s.n_tup_hot_upd)} HOT, cumulative stats</small>`],
     ];
+    const pred = predictionAt(state.current.run_id, state.step);
+    if (pred) {
+      const verdict = pred.error === 0 ? "exact" : `${pred.error > 0 ? "over" : "under"} by ${fmt(Math.abs(pred.error))}`;
+      facts.push(["Model prediction", `${fmt(pred.predicted)} <small>pages, ${verdict}</small>`]);
+    }
     const idx = cp.relation.indexes || [];
     if (idx.length) {
       const bytes = idx.reduce((a, i) => a + i.main_bytes, 0);
@@ -244,12 +284,13 @@
   window.addEventListener("resize", () => { if (state.current) renderHeat(); });
 
   // ---------- comparison ----------
-  function renderCompare() {
+  async function renderCompare() {
     const svg = $("compare"), legend = $("compare-legend");
     const runs = state.runs.filter((r) => state.compare.has(r.run_id));
+    await Promise.all(runs.map((r) => predictionsFor(r.run_id)));
     legend.innerHTML = "";
     if (!runs.length) {
-      svg.innerHTML = `<text x="360" y="135" text-anchor="middle">Tick two or more runs to compare how their page counts move step by step.</text>`;
+      svg.innerHTML = `<text x="360" y="135" text-anchor="middle">Tick two or more runs to compare how their page counts move step by step. Dashed lines are the capacity model's one-step-ahead predictions.</text>`;
       return;
     }
     const W = 720, H = 260, L = 52, R = 16, T = 16, B = 34;
@@ -268,10 +309,17 @@
       const col = SERIES[k % SERIES.length];
       const d = r.main_pages.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(" ");
       out += `<path class="series" d="${d}" stroke="${col}"/>`;
+      const preds = state.predictions[r.run_id] || [];
+      if (preds.length) {
+        const pd = preds.map((p, j) => `${j ? "L" : "M"}${x(p.step)},${y(p.predicted)}`).join(" ");
+        out += `<path class="predicted" d="${pd}" stroke="${col}"><title>${r.label}: capacity model</title></path>`;
+      }
       out += r.main_pages.map((v, i) => `<circle class="pt" cx="${x(i)}" cy="${y(v)}" r="3.5" fill="${col}"><title>${r.label}, ${r.steps[i]}: ${fmt(v)} pages</title></circle>`).join("");
       const li = document.createElement("li");
       li.innerHTML = `<span class="swatch" style="background:${col}"></span>`;
-      li.appendChild(document.createTextNode(`${r.label}: ${fmt(r.main_pages[0])} → ${fmt(r.main_pages[r.main_pages.length - 1])} pages`));
+      const errs = (state.predictions[r.run_id] || []).map((p) => Math.abs(p.error));
+      const mae = errs.length ? (errs.reduce((a, b) => a + b, 0) / errs.length).toFixed(1) : null;
+      li.appendChild(document.createTextNode(`${r.label}: ${fmt(r.main_pages[0])} → ${fmt(r.main_pages[r.main_pages.length - 1])} pages${mae !== null ? `, model MAE ${mae}` : ""}`));
       legend.appendChild(li);
     });
     svg.innerHTML = out;

@@ -45,10 +45,16 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; background:
 .run-head { margin-bottom: 18px; }
 .run-head h2 { font-size: 22px; }
 
-.steps { display: flex; gap: 6px; align-items: flex-end; margin: 8px 0 22px; height: 96px; }
+.steps { display: flex; gap: 6px; align-items: flex-end; margin: 8px 0 22px; height: 96px; overflow-x: auto; padding-top: 6px; }
 .step { flex: 1; min-width: 44px; max-width: 110px; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px; background: none; border: 0; padding: 0; cursor: pointer; color: var(--muted); font: inherit; font-size: 12px; }
 .step .bar { background: var(--line); border-radius: 2px 2px 0 0; min-height: 3px; transition: background 120ms; }
 .step .n { font-variant-numeric: tabular-nums; color: var(--ink); }
+.step .n em { font-style: normal; font-size: 11px; margin-left: 3px; }
+.step .n em.over { color: var(--warn); }
+.step .n em.under { color: var(--accent); }
+.step .barwrap { position: relative; display: block; }
+.step .pred { position: absolute; left: 0; right: 0; height: 0; border-top: 2px dashed var(--ink); opacity: 0.55; pointer-events: none; }
+.compare-chart .predicted { fill: none; stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.7; }
 .step:hover .bar { background: #b9c6d0; }
 .step[aria-selected="true"] .bar { background: var(--accent); }
 .step[aria-selected="true"] { color: var(--ink); }
