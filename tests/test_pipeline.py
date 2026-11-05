@@ -9,7 +9,6 @@ from __future__ import annotations
 import csv
 import json
 
-import psycopg
 import pytest
 
 from pagereuse import db
@@ -19,14 +18,6 @@ from pagereuse.export import write_result
 ROWS = 2000
 FSM_CATEGORY = 32  # BLCKSZ / 256 for the default 8 kB block size
 LINE_POINTER = 4  # sizeof(ItemIdData)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def lab_db():
-    try:
-        db.connect().close()
-    except psycopg.OperationalError as e:
-        pytest.fail(f"lab PostgreSQL not reachable at {db.dsn()}: run `docker compose up -d --wait`\n{e}")
 
 
 @pytest.fixture(scope="module")

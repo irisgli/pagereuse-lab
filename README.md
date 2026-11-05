@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16.4-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 3](https://img.shields.io/badge/phase-3%20visualization-informational)
+![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16.4-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 4](https://img.shields.io/badge/phase-4%20predictive%20modeling-informational)
 
 </div>
 
@@ -17,6 +17,7 @@ uv run pytest -v
 uv run python -m pagereuse run --rows 10000 --fillfactor 100
 uv run python -m pagereuse suite fillfactor
 uv run python -m pagereuse serve        # viewer at http://127.0.0.1:8765
+uv run python -m pagereuse evaluate     # score size predictors on results/
 ```
 
 Each run writes `results/<run_id>/result.json` (config, environment, methodology, per-checkpoint metrics) and `results/<run_id>/pages.csv` (one row per page per checkpoint). A suite also writes `results/comparison_<suite>_<stamp>.csv` with one row per run and checkpoint.
@@ -54,6 +55,18 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 ## Viewer
 
 `pagereuse serve` reads `results/` and serves a dependency-free viewer: a run list grouped by suite, a step strip of page counts, a heatmap with one cell per heap page in file order (colour by measured free bytes, FSM record, FSM minus measured, dead or redirect line pointers, xmax set, all-visible flag), per-page hover details, and an overlay chart of page counts across ticked runs.
+
+## Predicting growth
+
+`pagereuse evaluate` scores three one-step-ahead predictors of the page count on every saved run, walk-forward, and writes `results/model_eval.csv`. Each predictor sees only the previous checkpoint's measurements and the operation about to run.
+
+| Predictor | What it does |
+|---|---|
+| `last_value` | pages stay what they were |
+| `linear_trend` | least-squares line through the page counts so far |
+| `capacity` | slotted-page accounting: inserts use pages the FSM offers for `tuple + reserve` bytes, then the last page, then extend; updates stay on their page when the new version fits (reserve usable, dead versions pruned first); VACUUM truncates the all-dead tail |
+
+On the three suites at 2000 rows the capacity model is exact on every insert, delete, VACUUM and first update round, and has mean absolute error under 2 pages against about 10 for `last_value`. It underestimates repeat updates once an earlier round relocated the hot rows to fresh pages, because measurements carry no row identities; the test suite pins this. Machine learning is deferred until a workload beats this physical model.
 
 ## Assumptions and limitations
 

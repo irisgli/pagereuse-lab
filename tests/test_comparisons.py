@@ -10,28 +10,8 @@ import pytest
 
 from pagereuse.experiment import ExperimentConfig, _expand, run
 from pagereuse.export import COMPARISON_COLUMNS, write_comparison
-from pagereuse.suites import SUITES
 
 ROWS = 2000
-
-
-def _suite(name):
-    return {cfg.label: run(cfg) for cfg in SUITES[name](ROWS)}
-
-
-@pytest.fixture(scope="module")
-def ff():
-    return _suite("fillfactor")
-
-
-@pytest.fixture(scope="module")
-def upd():
-    return _suite("updates")
-
-
-@pytest.fixture(scope="module")
-def cyc():
-    return _suite("cycles")
 
 
 def pages(r, i):
