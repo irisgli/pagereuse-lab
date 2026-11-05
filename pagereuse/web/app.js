@@ -74,6 +74,8 @@
     if (t.startsWith("prl_ff")) return "fillfactor sweep";
     if (t.startsWith("prl_upd")) return "update patterns";
     if (t.startsWith("prl_cyc")) return "delete cycles";
+    if (t.startsWith("prl_snap")) return "long snapshots";
+    if (t.startsWith("prl_conc")) return "concurrent sessions";
     return "single runs";
   }
 
@@ -126,7 +128,9 @@
     const o = cp.operation;
     if (o.op === "update") return `update ${o.column}${o.grow_bytes ? ` +${o.grow_bytes}B` : ""}`;
     if (o.op === "delete") return `delete ${o.pattern}`;
-    return o.op;
+    if (o.op === "insert" && o.sessions > 1) return `insert ×${o.sessions}`;
+    if (o.op === "vacuum" && o.snapshot_held) return "vacuum (held)";
+    return o.op.replace("_", " ");
   }
 
   function renderSteps() {

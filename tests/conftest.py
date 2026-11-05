@@ -37,3 +37,13 @@ def upd():
 @pytest.fixture(scope="session")
 def cyc():
     return _suite("cycles")
+
+
+@pytest.fixture(scope="session")
+def snap():
+    return _suite("snapshots")
+
+
+@pytest.fixture(scope="session")
+def conc():
+    return _suite("concurrency")

@@ -69,10 +69,14 @@ def predict_capacity(history: list[int], prev: dict, op: dict, env: dict, cfg: d
     reserve = block * (100 - cfg["fillfactor"]) // 100
     kind = op["op"]
 
-    if kind == "delete":
+    if kind in ("delete", "hold_snapshot", "release_snapshot"):
         return npages
 
     if kind == "vacuum":
+        if op.get("snapshot_held"):
+            # Deleted versions are still visible to the held snapshot, so
+            # nothing is removed and no tail can become empty.
+            return npages
         live = [p["lp_normal"] - p["normal_xmax_set"] for p in pages]
         trailing_empty = 0
         for n in reversed(live):

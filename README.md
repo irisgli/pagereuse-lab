@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16.4-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 5](https://img.shields.io/badge/phase-5%20engineering%20quality-informational)
+[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16.4-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 6](https://img.shields.io/badge/phase-6%20multi--session-informational)
 
 </div>
 
@@ -32,7 +32,9 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `insert` | `rows` | fixed-length payload, one transaction |
 | `delete` | `pattern` stride / random / oldest, `every`, `fraction` | oldest = queue-like churn |
 | `update` | `pattern`, `column` payload / tag, `grow_bytes` | `payload` is HOT-eligible, `tag` is indexed so never HOT |
-| `vacuum` | | plain VACUUM |
+| `insert` | `sessions` | split across that many connections running at once |
+| `vacuum` | | `VACUUM (VERBOSE)`; records the server's "dead but not yet removable" count |
+| `hold_snapshot` / `release_snapshot` | | keep a REPEATABLE READ transaction open on a side connection across later steps |
 | `repeat` | `times`, `steps` | expands inline |
 
 `run` uses load, delete every k-th row, vacuum, reinsert. `run --steps file.json` takes any step list.
@@ -44,6 +46,8 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `fillfactor` | 100 / 90 / 70 | three rounds of same-size payload updates to half the rows, VACUUM before the third |
 | `updates` | payload (HOT-eligible) / indexed tag / payload +100 bytes | fillfactor 90, same update schedule |
 | `cycles` | VACUUM vs none, random vs oldest-first deletes | three delete-half / reinsert-half cycles, live row count constant |
+| `snapshots` | a long-running snapshot held across delete and VACUUM, or none | delete half, VACUUM, reinsert half; the held variant then releases, VACUUMs and reinserts again |
+| `concurrency` | 1 vs 4 inserting sessions | load, delete half, VACUUM, reinsert half |
 
 ## Measurements and provenance
 

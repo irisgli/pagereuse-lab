@@ -3,14 +3,22 @@
 A workload is a list of steps. After every step the table is measured.
 Step dicts (JSON-friendly):
 
-    {"op": "insert", "rows": N}
+    {"op": "insert", "rows": N, "sessions": S}
     {"op": "delete", "pattern": "stride"|"random"|"oldest", "every": K, "fraction": F}
 
   stride: ids divisible by ``every``; random: seeded sample of ``fraction``;
   oldest: the first ``fraction`` of live ids (queue-like churn).
     {"op": "update", "pattern": ..., "column": "payload"|"tag", "grow_bytes": G}
     {"op": "vacuum"}
+    {"op": "hold_snapshot"}      open a REPEATABLE READ transaction on a side
+                                 connection and keep it open across later steps
+    {"op": "release_snapshot"}   close it
     {"op": "repeat", "times": T, "steps": [...]}
+
+* ``sessions`` > 1 splits an insert across that many connections running at
+  the same time, each in its own transaction.
+* While a snapshot is held, VACUUM cannot remove tuples deleted after it was
+  taken; the VACUUM step records the server's own notice saying so.
 
 * ``payload`` is not indexed, so updating it can be a HOT update when the
   page has room. ``tag`` is indexed, so updating it is never HOT.
@@ -31,11 +39,14 @@ Methodology (recorded in every result file):
 from __future__ import annotations
 
 import random
+import re
 import string
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
+import psycopg
 from psycopg import sql
 
 from . import db, metrics
@@ -104,6 +115,8 @@ def _validate_step(s: dict) -> None:
     if op == "insert":
         if int(s["rows"]) <= 0:
             raise ValueError("insert rows must be positive")
+        if int(s.get("sessions", 1)) < 1:
+            raise ValueError("insert sessions must be >= 1")
     elif op in ("delete", "update"):
         if s.get("pattern", "stride") not in ("stride", "random", "oldest"):
             raise ValueError("pattern must be 'stride', 'random' or 'oldest'")
@@ -111,7 +124,7 @@ def _validate_step(s: dict) -> None:
             raise ValueError("bad every/fraction")
         if op == "update" and s.get("column", "payload") not in ("payload", "tag"):
             raise ValueError("update column must be 'payload' or 'tag'")
-    elif op != "vacuum":
+    elif op not in ("vacuum", "hold_snapshot", "release_snapshot"):
         raise ValueError(f"unknown step op {op!r}")
 
 
@@ -162,27 +175,60 @@ class _State:
     def __init__(self) -> None:
         self.next_id = 1
         self.live: dict[int, int] = {}  # id -> current payload length
+        self.snapshot_conn = None
+
+    def close(self) -> None:
+        if self.snapshot_conn is not None:
+            self.snapshot_conn.close()
+            self.snapshot_conn = None
+
+
+def _insert_rows(conninfo, t: sql.Composable, rows: list[tuple]) -> None:
+    with db.connect(conninfo) as conn, conn.transaction(), conn.cursor() as cur:
+        cur.executemany(sql.SQL("INSERT INTO {} (id, tag, payload) VALUES (%s, %s, %s)").format(t), rows)
 
 
 def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.Random) -> dict:
     t = sql.Identifier(cfg.table)
     op = s["op"]
-    with db.connect(conninfo) as conn:
-        if op == "insert":
-            n = int(s["rows"])
-            rows = [
-                (st.next_id + i, (st.next_id + i) % 97, p)
-                for i, p in enumerate(_payloads(rng, n, cfg.payload_bytes))
-            ]
-            with conn.transaction(), conn.cursor() as cur:
-                cur.executemany(
-                    sql.SQL("INSERT INTO {} (id, tag, payload) VALUES (%s, %s, %s)").format(t), rows
-                )
-            for i, _, p in rows:
-                st.live[i] = len(p)
-            st.next_id += n
-            return {"op": op, "rows": n}
 
+    if op == "insert":
+        n = int(s["rows"])
+        sessions = int(s.get("sessions", 1))
+        rows = [
+            (st.next_id + i, (st.next_id + i) % 97, p)
+            for i, p in enumerate(_payloads(rng, n, cfg.payload_bytes))
+        ]
+        if sessions == 1:
+            _insert_rows(conninfo, t, rows)
+        else:
+            # Contiguous id slices, one connection each, all running at once.
+            size = -(-n // sessions)
+            slices = [rows[k : k + size] for k in range(0, n, size)]
+            with ThreadPoolExecutor(max_workers=len(slices)) as pool:
+                list(pool.map(lambda r: _insert_rows(conninfo, t, r), slices))
+        for i, _, p in rows:
+            st.live[i] = len(p)
+        st.next_id += n
+        return {"op": op, "rows": n, "sessions": sessions}
+
+    if op == "hold_snapshot":
+        if st.snapshot_conn is not None:
+            raise ValueError("a snapshot is already held")
+        conn = db.connect(conninfo)
+        conn.autocommit = False
+        conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+        snapshot_count = conn.execute(sql.SQL("SELECT count(*) FROM {}").format(t)).fetchone()[0]
+        st.snapshot_conn = conn
+        return {"op": op, "rows_visible_to_snapshot": snapshot_count}
+
+    if op == "release_snapshot":
+        if st.snapshot_conn is None:
+            raise ValueError("no snapshot is held")
+        st.close()
+        return {"op": op}
+
+    with db.connect(conninfo) as conn:
         if op == "delete":
             ids = _select_ids(sorted(st.live), s, rng)
             cnt = conn.execute(sql.SQL("DELETE FROM {} WHERE id = ANY(%s)").format(t), (ids,)).rowcount
@@ -215,10 +261,30 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
             }
 
         if op == "vacuum":
-            conn.execute(sql.SQL("VACUUM {}").format(t))
-            return {"op": op}
+            notices: list[str] = []
+            conn.add_notice_handler(lambda d: notices.append(d.message_primary or ""))
+            conn.execute(sql.SQL("VACUUM (VERBOSE) {}").format(t))
+            text = "\n".join(notices)
+            return {
+                "op": op,
+                "snapshot_held": st.snapshot_conn is not None,
+                "dead_not_yet_removable": _parse_not_removable(text),
+                "pages_removed": _parse_pages_removed(text),
+                "notices": text,
+            }
 
     raise ValueError(op)
+
+
+def _parse_pages_removed(verbose: str) -> int | None:
+    m = re.search(r"pages: (\d+) removed", verbose)
+    return int(m.group(1)) if m else None
+
+
+def _parse_not_removable(verbose: str) -> int | None:
+    """From VACUUM VERBOSE: 'tuples: R removed, L remain, N are dead but not yet removable'."""
+    m = re.search(r"(\d+) are dead but not yet removable", verbose)
+    return int(m.group(1)) if m else None
 
 
 def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
@@ -246,9 +312,12 @@ def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
 
     st = _State()
     checkpoints = []
-    for i, s in enumerate(steps):
-        operation = _run_step(cfg, conninfo, s, st, rng)
-        checkpoints.append(_measure(conninfo, cfg.table, i, operation))
+    try:
+        for i, s in enumerate(steps):
+            operation = _run_step(cfg, conninfo, s, st, rng)
+            checkpoints.append(_measure(conninfo, cfg.table, i, operation))
+    finally:
+        st.close()
 
     pages = [c["relation"]["exact"]["main_pages"] for c in checkpoints]
     return {
@@ -260,7 +329,7 @@ def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
         "environment": {"server_version": server_version, "block_size": block_size},
         "methodology": {
             "autovacuum": "disabled on experiment table",
-            "step_isolation": "fresh backend per step",
+            "step_isolation": "fresh backend per step; held snapshots live on a separate connection",
             "schema": "id int PK, tag int (indexed unless index_tag=false), payload text",
             "hot_updates": "payload updates are HOT-eligible; tag updates never HOT when indexed",
             "page_reader": "pageinspect get_raw_page/page_header/heap_page_items",

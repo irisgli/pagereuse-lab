@@ -102,7 +102,57 @@ def delete_cycles(rows: int) -> list[ExperimentConfig]:
     ]
 
 
+def _churn(rows: int, hold: bool) -> list[dict]:
+    """Delete half, VACUUM, reinsert half; optionally under a snapshot held from
+    before the delete and released before a second VACUUM and reinsert."""
+    steps: list[dict] = [{"op": "insert", "rows": rows}]
+    if hold:
+        steps.append({"op": "hold_snapshot"})
+    steps += [
+        {"op": "delete", "pattern": "random", "fraction": 0.5},
+        {"op": "vacuum"},
+        {"op": "insert", "rows": rows // 2},
+    ]
+    if hold:
+        steps += [{"op": "release_snapshot"}, {"op": "vacuum"}, {"op": "insert", "rows": rows // 2}]
+    return steps
+
+
+def long_snapshots(rows: int) -> list[ExperimentConfig]:
+    """Same churn with and without a long-running REPEATABLE READ snapshot."""
+    return [
+        ExperimentConfig(
+            table="prl_snap_none", rows=rows, label="churn, no snapshot", steps=_churn(rows, False)
+        ),
+        ExperimentConfig(
+            table="prl_snap_held", rows=rows, label="churn under held snapshot", steps=_churn(rows, True)
+        ),
+    ]
+
+
+def concurrent_inserts(rows: int) -> list[ExperimentConfig]:
+    """Load with 1 vs 4 concurrent sessions, then one delete/VACUUM/reinsert cycle."""
+    out = []
+    for n in (1, 4):
+        out.append(
+            ExperimentConfig(
+                table=f"prl_conc_{n}",
+                rows=rows,
+                label=f"load with {n} session{'s' if n > 1 else ''}",
+                steps=[
+                    {"op": "insert", "rows": rows, "sessions": n},
+                    {"op": "delete", "pattern": "random", "fraction": 0.5},
+                    {"op": "vacuum"},
+                    {"op": "insert", "rows": rows // 2, "sessions": n},
+                ],
+            )
+        )
+    return out
+
+
 SUITES = {
+    "snapshots": long_snapshots,
+    "concurrency": concurrent_inserts,
     "fillfactor": fillfactor_sweep,
     "updates": update_patterns,
     "cycles": delete_cycles,

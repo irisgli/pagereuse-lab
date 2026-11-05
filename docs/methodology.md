@@ -54,6 +54,11 @@ The viewer's "FSM minus measured" colouring exists to make the gap between recor
 - Updating an indexed column is never HOT. At fillfactor 100 the first update round is never HOT either, since no page has room.
 - Lower fillfactor costs pages at load and saves more under update churn (at 10,000 rows: 304 to 607 pages at fillfactor 100, 435 to 480 at fillfactor 70).
 
+## Multi-session steps
+
+- `hold_snapshot` opens a REPEATABLE READ transaction on a separate connection and runs one SELECT, which pins that backend's xmin. VACUUM cannot remove tuples deleted after that point; the lab records the server's own `VACUUM (VERBOSE)` line, "N are dead but not yet removable", rather than inferring it. Measured: with the snapshot held, reinserting the deleted rows extends the relation even though every deleted tuple's space is physically present; after `release_snapshot` the next VACUUM reclaims it and the following reinsert adds no pages.
+- `insert` with `sessions` > 1 splits the rows into contiguous id slices and inserts them from that many connections at once, each in one transaction. Each backend keeps its own insertion target, so pages fill from several writers and the layout is no longer byte-reproducible across runs; only counts and sizes are asserted for these.
+
 ## Predictor evaluation
 
 Predictors are scored walk-forward: at step i they see checkpoint i-1 and the operation of step i, never the actual outcome. No parameter is fitted on the run being scored. The capacity model's known failure, repeat updates after the hot rows were relocated, is pinned by a test so a change in behaviour is noticed.
@@ -61,6 +66,6 @@ Predictors are scored walk-forward: at step i they see checkpoint i-1 and the op
 ## Not covered
 
 - Only PostgreSQL 16.4 has been measured. Insert and pruning behaviour differ in later releases.
-- Single-session workloads only. Concurrent transactions, long-running snapshots that hold back the xmin horizon, and autovacuum timing are out of scope.
+- Concurrency is limited to parallel inserters and one held snapshot. Concurrent updates, lock contention between writers and autovacuum timing are out of scope.
 - TOAST, variable-length rows, indexes' own storage, and WAL are not measured.
 - The FSM is read through `pg_freespace`, which reports the leaf value for each page; the upper levels of the FSM tree are not inspected.
