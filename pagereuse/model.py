@@ -107,7 +107,12 @@ def predict_capacity(history: list[int], prev: dict, op: dict, env: dict, cfg: d
         return npages - trailing_empty
 
     old_len = tuple_footprint(pages) - LINE_POINTER
-    footprint = _align(old_len + (op.get("grow_bytes", 0) if kind == "update" else 0)) + LINE_POINTER
+    if kind == "update":
+        footprint = _align(old_len + op.get("grow_bytes", 0)) + LINE_POINTER
+    else:
+        # Inserts always carry the run's base payload; after growing updates the
+        # average tuple is larger than that, so size them from the first checkpoint.
+        footprint = env.get("insert_footprint") or tuple_footprint(pages)
     n = int(op["rows"])
     need = footprint + reserve  # what an INSERT asks the FSM for
 
@@ -158,7 +163,9 @@ PREDICTORS = {
 def evaluate_run(result: dict) -> list[dict]:
     """One row per (predictor, step >= 1) with prediction, actual and error."""
     cps = result["checkpoints"]
-    env, cfg = result["environment"], result["config"]
+    env, cfg = dict(result["environment"]), result["config"]
+    if cps[0]["pages"] and sum(p["lp_normal"] for p in cps[0]["pages"]):
+        env["insert_footprint"] = tuple_footprint(cps[0]["pages"])
     rows = []
     for i in range(1, len(cps)):
         history = [c["relation"]["exact"]["main_pages"] for c in cps[:i]]

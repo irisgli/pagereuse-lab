@@ -3,6 +3,7 @@ python -m pagereuse run   [options]        one experiment
 python -m pagereuse suite <name> [options] a named comparison suite
 python -m pagereuse serve [options]        results viewer at http://127.0.0.1:8765
 python -m pagereuse evaluate [options]     score size predictors on saved results
+python -m pagereuse validate [options]     score predictors on random, unseen workloads
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from .export import write_comparison, write_result
 from .model import write_evaluation
 from .server import index_runs, load_run, serve
 from .suites import SUITES
+from .validate import validate
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -48,7 +50,27 @@ def main(argv: list[str] | None = None) -> None:
     e = sub.add_parser("evaluate", help="walk-forward evaluation of page-count predictors")
     e.add_argument("--results", type=Path, default=Path("results"))
 
+    va = sub.add_parser("validate", help="run random workloads and score predictors by operation")
+    va.add_argument("--n", type=int, default=12)
+    va.add_argument("--seed", type=int, default=1000, help="first seed; workloads use seed..seed+n-1")
+    va.add_argument("--rows", type=int, default=None, help="fixed row count (default: random per workload)")
+    va.add_argument("--out", type=Path, default=Path("results/validation"))
+
     args = p.parse_args(argv)
+    if args.cmd == "validate":
+        report = validate(list(range(args.seed, args.seed + args.n)), args.out, args.rows)
+        print(f"{'predictor':14s} {'op':18s} {'n':>4s} {'MAE':>7s} {'max':>5s} {'exact':>6s}")
+        for row in report["by_operation"]:
+            print(
+                f"{row['predictor']:14s} {row['op']:18s} {row['n']:4d} {row['mae']:7.2f} "
+                f"{row['max_abs_error']:5d} {row['exact_rate']:6.0%}"
+            )
+        for name in ("last_value", "linear_trend", "capacity"):
+            errs = [abs(r["error"]) for r in report["rows"] if r["predictor"] == name]
+            exact = sum(e == 0 for e in errs) / len(errs)
+            print(f"{name:14s} overall MAE {sum(errs) / len(errs):.2f}, exact {exact:.0%}")
+        print(f"rows: {len(report['rows'])} -> {args.out / 'validation.csv'}")
+        return
     if args.cmd == "evaluate":
         results = [load_run(args.results, r["run_id"]) for r in index_runs(args.results)]
         if not results:

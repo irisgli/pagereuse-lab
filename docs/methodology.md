@@ -75,6 +75,12 @@ The trigger rule is the documented one: a table is vacuumed when dead tuples exc
 
 Timing caveat: an autovacuum can complete between a step and its measurement, or during a later step; the lab records `autovacuum_count` at every checkpoint so such runs are visible, and each wait step's baseline is the previous checkpoint's count.
 
+## Out-of-sample validation
+
+The suites were used while building the capacity model, so they cannot show whether it generalises. `pagereuse validate` draws workloads from a seeded grammar (row count 1000 to 3000; payload 64, 120, 200, 400 or 700 bytes; fillfactor 70 to 100; five to eight steps mixing deletes by stride, random or oldest with fractions 0.1 to 0.5, payload or indexed-column updates with 0 to 100 bytes of growth, inserts, VACUUMs and snapshot holds) and scores every predictor one step ahead.
+
+Seeds 1000 to 1011 on 16.4, 225 scored steps: `capacity` MAE 0.91 pages, exact on 85%; `last_value` 20.9 and 64%; `linear_trend` 32.3 and 40%. By operation, `capacity` was exact on all 20 deletes, 16 VACUUMs and 8 snapshot steps; on 14 inserts it was within one page (three overpredictions by one, consistent with the FSM's 32-byte category rounding); on 17 updates its MAE was 3.8 with a maximum of 22, the weak spot already known from the suites. One model change came out of this batch: inserts are now sized from the first checkpoint's tuple length rather than the current average, because after a growing update the average tuple is larger than what an insert carries; before that change the worst insert error was 8 pages.
+
 ## Prior work
 
 - Peter Geoghegan, "The Free Space Map: Problems and Opportunities", pgsql-hackers, 2021: a developer's account of how FSM-driven placement can scatter related tuples and fragment the heap. The `fsm_gap` colouring and the FSM-based insert rule in the capacity model are the lab's way of making that placement visible and testable.

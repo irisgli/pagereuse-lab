@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 9](https://img.shields.io/badge/phase-9%20autovacuum-informational)
+[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 10](https://img.shields.io/badge/phase-10%20model%20validation-informational)
 
 </div>
 
@@ -18,6 +18,7 @@ uv run python -m pagereuse run --rows 10000 --fillfactor 100
 uv run python -m pagereuse suite fillfactor
 uv run python -m pagereuse serve        # viewer at http://127.0.0.1:8765
 uv run python -m pagereuse evaluate     # score size predictors on results/
+uv run python -m pagereuse validate     # score them on 12 random workloads never used for tuning
 scripts/bench.sh                        # all suites at 10k rows + evaluation, fixed seeds
 ```
 
@@ -76,7 +77,17 @@ Each page record also carries `dead_removable`: deleted versions older than the 
 | `linear_trend` | least-squares line through the page counts so far |
 | `capacity` | slotted-page accounting: inserts use pages the FSM offers for `tuple + reserve` bytes, then the last page, then extend; updates stay on their page when the new version fits (reserve usable, dead versions pruned first); VACUUM removes only versions older than the xmin horizon and truncates a tail left with no live tuple |
 
-On the three suites at 2000 rows the capacity model is exact on every insert, delete, VACUUM and first update round, and has mean absolute error under 2 pages against about 10 for `last_value`. It underestimates repeat updates once an earlier round relocated the hot rows to fresh pages, because measurements carry no row identities; the test suite pins this. Machine learning is deferred until a workload beats this physical model.
+On the three suites at 2000 rows the capacity model is exact on every insert, delete, VACUUM and first update round, and has mean absolute error under 2 pages against about 10 for `last_value`. It underestimates repeat updates once an earlier round relocated the hot rows to fresh pages, because measurements carry no row identities; the test suite pins this.
+
+`pagereuse validate` scores the predictors on seeded random workloads (1000 to 3000 rows, payloads 64 to 700 bytes, fillfactor 70 to 100, mixed deletes, updates, inserts, VACUUMs and snapshot holds) that were not used while building the model. On 12 such workloads, 225 scored steps:
+
+| Predictor | MAE (pages) | Exact |
+|---|---|---|
+| `last_value` | 20.9 | 64% |
+| `linear_trend` | 32.3 | 40% |
+| `capacity` | 0.9 | 85% |
+
+By operation, `capacity` was exact on every delete, VACUUM and snapshot step, within one page on inserts, and weakest on updates (MAE 3.8, max 22 pages, 53% exact). Machine learning is deferred until a workload beats this physical model.
 
 ## Across PostgreSQL releases
 

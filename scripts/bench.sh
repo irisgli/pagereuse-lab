@@ -13,4 +13,5 @@ for suite in fillfactor updates cycles snapshots concurrency overlap autovacuum;
   uv run python -m pagereuse suite "$suite" --rows "$ROWS" --out "$OUT"
 done
 uv run python -m pagereuse evaluate --results "$OUT" | tee "$OUT/model_eval.txt"
+uv run python -m pagereuse validate --n 12 --out "$OUT/validation" | tee "$OUT/validation.txt"
 echo "benchmark written to $OUT"
