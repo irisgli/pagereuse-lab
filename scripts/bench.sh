@@ -9,7 +9,7 @@ VERSION="$(uv run python -c "from pagereuse import db; c = db.connect(); print(c
 OUT="results/bench-pg${VERSION}-$(date -u +%Y%m%d)"
 mkdir -p "$OUT"
 
-for suite in fillfactor updates cycles snapshots concurrency overlap autovacuum; do
+for suite in fillfactor updates cycles snapshots concurrency overlap autovacuum storage; do
   uv run python -m pagereuse suite "$suite" --rows "$ROWS" --out "$OUT"
 done
 uv run python -m pagereuse evaluate --results "$OUT" | tee "$OUT/model_eval.txt"

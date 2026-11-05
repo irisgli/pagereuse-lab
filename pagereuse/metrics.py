@@ -80,7 +80,8 @@ def relation_metrics(conn: Connection, table: str) -> dict:
             """SELECT current_setting('block_size')::int AS block_size,
                   pg_relation_size(%(r)s::regclass, 'main') AS main_bytes,
                   pg_relation_size(%(r)s::regclass, 'fsm')  AS fsm_bytes,
-                  pg_relation_size(%(r)s::regclass, 'vm')   AS vm_bytes""",
+                  pg_relation_size(%(r)s::regclass, 'vm')   AS vm_bytes,
+                  pg_total_relation_size(%(r)s::regclass)   AS total_bytes""",
             {"r": rel},
         )
     )
@@ -107,7 +108,45 @@ def relation_metrics(conn: Connection, table: str) -> dict:
     return {
         "exact": {**sizes, **{f"pgstattuple_{k}": v for k, v in tuples.items()}},
         "estimated": est,
+        "indexes": index_metrics(conn, rel),
+        "toast": toast_metrics(conn, rel),
     }
+
+
+def index_metrics(conn: Connection, rel: str) -> list[dict]:
+    """Size and pgstatindex statistics for every index on the table (all B-trees here)."""
+    cur = conn.execute(
+        """SELECT i.indexrelid::regclass::text AS name,
+                  pg_relation_size(i.indexrelid, 'main') AS main_bytes,
+                  (pgstatindex(i.indexrelid)).*
+           FROM pg_index i WHERE i.indrelid = %s::regclass ORDER BY 1""",
+        (rel,),
+    )
+    cols = [d.name for d in cur.description]
+    return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
+
+
+def toast_metrics(conn: Connection, rel: str) -> dict | None:
+    """Exact statistics for the TOAST table, if the table has one."""
+    row = conn.execute(
+        """SELECT t.oid::regclass::text AS name,
+                  pg_relation_size(t.oid, 'main') AS main_bytes,
+                  pg_relation_size(t.oid, 'main') / current_setting('block_size')::int AS main_pages,
+                  pg_indexes_size(t.oid) AS index_bytes
+           FROM pg_class c JOIN pg_class t ON t.oid = c.reltoastrelid
+           WHERE c.oid = %s::regclass""",
+        (rel,),
+    ).fetchone()
+    if row is None:
+        return None
+    out = dict(zip(("name", "main_bytes", "main_pages", "index_bytes"), row, strict=True))
+    out.update(
+        {
+            f"pgstattuple_{k}": v
+            for k, v in _row(conn.execute("SELECT * FROM pgstattuple(%s::regclass)", (out["name"],))).items()
+        }
+    )
+    return out
 
 
 def xmin_horizon(conn: Connection) -> int | None:

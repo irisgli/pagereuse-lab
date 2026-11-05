@@ -222,7 +222,45 @@ def autovacuum_thresholds(rows: int) -> list[ExperimentConfig]:
     ]
 
 
+def _storage_cycles(rows: int, pattern: str, vacuum: bool) -> list[dict]:
+    body: list[dict] = [{"op": "delete", "pattern": pattern, "fraction": 0.5}]
+    if vacuum:
+        body.append({"op": "vacuum"})
+    body.append({"op": "insert", "rows": rows // 2})
+    return [{"op": "insert", "rows": rows}, {"op": "repeat", "times": REPEAT_CYCLES, "steps": body}]
+
+
+def storage_forks(rows: int) -> list[ExperimentConfig]:
+    """Heap, indexes and TOAST under the same churn: 200-byte in-line payloads vs
+    3000-byte payloads stored out of line, random vs oldest-first deletes."""
+    out = []
+    for payload, storage, tag in ((200, None, "inline"), (3000, "external", "toast")):
+        for pattern in ("random", "oldest"):
+            out.append(
+                ExperimentConfig(
+                    table=f"prl_sto_{tag}_{pattern[:4]}",
+                    rows=rows,
+                    payload_bytes=payload,
+                    storage=storage,
+                    label=f"{tag} {payload}B, {pattern} deletes, vacuum",
+                    steps=_storage_cycles(rows, pattern, True),
+                )
+            )
+    out.append(
+        ExperimentConfig(
+            table="prl_sto_toast_novac",
+            rows=rows,
+            payload_bytes=3000,
+            storage="external",
+            label="toast 3000B, random deletes, no vacuum",
+            steps=_storage_cycles(rows, "random", False),
+        )
+    )
+    return out
+
+
 SUITES = {
+    "storage": storage_forks,
     "autovacuum": autovacuum_thresholds,
     "overlap": overlapping_snapshots,
     "snapshots": long_snapshots,

@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 10](https://img.shields.io/badge/phase-10%20model%20validation-informational)
+[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 11](https://img.shields.io/badge/phase-11%20indexes%20and%20TOAST-informational)
 
 </div>
 
@@ -52,6 +52,7 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `concurrency` | 1 vs 4 inserting sessions | load, delete half, VACUUM, reinsert half |
 | `overlap` | two snapshots with staggered lifetimes, or none | two deletes of a quarter each, VACUUM and reinsert after each release |
 | `autovacuum` | default thresholds vs `autovacuum_vacuum_scale_factor = 0.02` | autovacuum on, naptime 1 s; a 10% delete and reinsert, then a 40% delete and reinsert |
+| `storage` | 200-byte in-line vs 3000-byte out-of-line payloads, random vs oldest-first deletes | three delete-half / VACUUM / reinsert cycles; indexes and TOAST measured alongside the heap |
 
 ## Measurements and provenance
 
@@ -60,6 +61,8 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | `exact` | `pg_relation_size`, `pgstattuple`, `pageinspect` (`pd_upper - pd_lower`, line pointer states) | Read from the relation's bytes |
 | `fsm` | `pg_freespace(rel, blkno)` | Recorded value in 32-byte categories, rounded down when written. Written by VACUUM and when an inserter leaves a full page; later inserts do not update it, so it can overstate free space |
 | `estimated` | `pg_class.relpages/reltuples`, `pg_stat_user_tables` | Planner estimates and cumulative stats |
+
+Each checkpoint also records every index's size and `pgstatindex` statistics (leaf, deleted and empty pages, leaf density), the TOAST table's size and exact tuple counts when the table has one, and `pg_total_relation_size`. `storage="external"` on a run forces the payload out of line so TOAST placement is deterministic.
 
 Each page record also carries `dead_removable`: deleted versions older than the xmin horizon (the oldest `backend_xmin` among other sessions), which is what a VACUUM run at that moment could remove.
 
@@ -88,6 +91,10 @@ On the three suites at 2000 rows the capacity model is exact on every insert, de
 | `capacity` | 0.9 | 85% |
 
 By operation, `capacity` was exact on every delete, VACUUM and snapshot step, within one page on inserts, and weakest on updates (MAE 3.8, max 22 pages, 53% exact). Machine learning is deferred until a workload beats this physical model.
+
+## Beyond the heap
+
+Under three delete-half / VACUUM / reinsert cycles at 1000 rows, the heap stays flat and so does the TOAST table (500 pages for 3000-byte payloads; without VACUUM it grows 250 pages per cycle, and under oldest-first churn VACUUM truncates it exactly like the heap). The primary-key index does not stay flat: with random deletes its leaf pages go 3, 4, 5, 6 across the cycles and leaf density falls from 82% to 41% even though VACUUM ran every time, because new ids always land at the right end of the B-tree and a half-emptied leaf page is not reused until it is completely empty. With oldest-first deletes those pages do empty, appear as `deleted_pages`, and are recycled. The cyclic `tag` index never grows. Heap reuse and index reuse are separate questions with different answers in the same run.
 
 ## Across PostgreSQL releases
 

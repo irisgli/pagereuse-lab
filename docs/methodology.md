@@ -81,6 +81,17 @@ The suites were used while building the capacity model, so they cannot show whet
 
 Seeds 1000 to 1011 on 16.4, 225 scored steps: `capacity` MAE 0.91 pages, exact on 85%; `last_value` 20.9 and 64%; `linear_trend` 32.3 and 40%. By operation, `capacity` was exact on all 20 deletes, 16 VACUUMs and 8 snapshot steps; on 14 inserts it was within one page (three overpredictions by one, consistent with the FSM's 32-byte category rounding); on 17 updates its MAE was 3.8 with a maximum of 22, the weak spot already known from the suites. One model change came out of this batch: inserts are now sized from the first checkpoint's tuple length rather than the current average, because after a growing update the average tuple is larger than what an insert carries; before that change the worst insert error was 8 pages.
 
+## Indexes and TOAST
+
+Every checkpoint records, for each index, `pg_relation_size` and `pgstatindex` (tree level, leaf, internal, deleted and empty pages, average leaf density, fragmentation), and for the TOAST table its size and exact `pgstattuple` counts. `pg_total_relation_size` is recorded so the heap-only numbers can be set against the whole.
+
+Measured under three delete-half / VACUUM / reinsert cycles at 1000 rows:
+
+- TOAST behaves like the heap. 3000-byte payloads stored `EXTERNAL` make two chunks per row, four chunks per page, 500 pages. With VACUUM the TOAST table stays at 500 pages through every cycle; without it, 250 pages are appended per cycle and dead chunks accumulate; with oldest-first deletes VACUUM truncates it to 250 pages and the next reinsert extends it back.
+- The primary-key B-tree does not reuse like the heap. Keys are monotonically increasing ids, so new entries always go to the rightmost leaf. Random deletes leave every leaf page half full; VACUUM removes the dead index entries but a leaf page is only recycled once it is entirely empty, so leaf pages grow 3, 4, 5, 6 across the cycles while density falls from 82% to 41%. With oldest-first deletes the leftmost leaves empty out, VACUUM marks them deleted (`deleted_pages` rises), and later inserts recycle them, so leaf pages stay at 2 or 3.
+- The `tag` index, whose keys cycle through 97 values, never grows under either pattern.
+- `pg_total_relation_size` is at least the sum of the recorded pieces; the remainder is the indexes' own FSM and visibility forks, which are not itemised.
+
 ## Prior work
 
 - Peter Geoghegan, "The Free Space Map: Problems and Opportunities", pgsql-hackers, 2021: a developer's account of how FSM-driven placement can scatter related tuples and fragment the heap. The `fsm_gap` colouring and the FSM-based insert rule in the capacity model are the lab's way of making that placement visible and testable.
@@ -95,5 +106,5 @@ Predictors are scored walk-forward: at step i they see checkpoint i-1 and the op
 
 - Measured on 16.4, 17.11 and 18.6 only, all with default configuration. Non-default settings such as `vacuum_truncate` off or a different block size are not covered.
 - Concurrency is limited to parallel inserters and one held snapshot. Concurrent updates, lock contention between writers and autovacuum timing are out of scope.
-- TOAST, variable-length rows, indexes' own storage, and WAL are not measured.
+- Index and TOAST storage are measured at relation level (sizes, `pgstatindex`, `pgstattuple` on the TOAST table), not page by page, and the capacity model predicts heap pages only. Variable-length rows within one run and WAL are not measured.
 - The FSM is read through `pg_freespace`, which reports the leaf value for each page; the upper levels of the FSM tree are not inspected.

@@ -81,6 +81,7 @@ class ExperimentConfig:
     fillfactor: int = 100
     index_tag: bool = True
     autovacuum: dict | None = None  # reloptions, e.g. {"autovacuum_vacuum_scale_factor": 0.02}
+    storage: str | None = None  # payload column storage: "external" (out of line, no compression)
     delete_every: int = 2
     vacuum: bool = True
     seed: int = 42
@@ -91,8 +92,12 @@ class ExperimentConfig:
         db.check_table_name(self.table)
         if self.rows <= 0 or self.payload_bytes <= 0:
             raise ValueError("rows and payload_bytes must be positive")
-        if self.payload_bytes > 1000:
-            raise ValueError("payload_bytes > 1000 risks TOAST; not supported")
+        if self.payload_bytes > 1000 and self.storage is None:
+            raise ValueError("payload_bytes > 1000 is TOASTed; set storage='external' to study that")
+        if self.payload_bytes > 6000:
+            raise ValueError("payload_bytes > 6000 not supported")
+        if self.storage not in (None, "external", "extended", "main", "plain"):
+            raise ValueError("storage must be external, extended, main or plain")
         if not 10 <= self.fillfactor <= 100:
             raise ValueError("fillfactor must be in [10, 100]")
         if self.delete_every < 1:
@@ -372,6 +377,10 @@ def run(cfg: ExperimentConfig, conninfo: str | None = None) -> dict:
                 ),
             )
         )
+        if cfg.storage is not None:
+            conn.execute(
+                sql.SQL("ALTER TABLE {} ALTER COLUMN payload SET STORAGE {}").format(t, sql.SQL(cfg.storage))
+            )
         if cfg.index_tag:
             conn.execute(
                 sql.SQL("CREATE INDEX {} ON {} (tag)").format(sql.Identifier(f"{cfg.table}_tag_idx"), t)

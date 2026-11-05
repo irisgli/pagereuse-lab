@@ -77,6 +77,7 @@
     if (t.startsWith("prl_snap") || t.startsWith("prl_ovl")) return "long snapshots";
     if (t.startsWith("prl_conc")) return "concurrent sessions";
     if (t.startsWith("prl_av")) return "autovacuum";
+    if (t.startsWith("prl_sto")) return "indexes and toast";
     return "single runs";
   }
 
@@ -204,6 +205,18 @@
       ["Line pointers", `${fmt(e.lp_dead_total)} <small>dead</small> ${fmt(e.lp_redirect_total)} <small>redirect</small> ${fmt(e.lp_unused_total)} <small>unused</small>`],
       ["Updates so far", `${fmt(s.n_tup_upd)} <small>${fmt(s.n_tup_hot_upd)} HOT, cumulative stats</small>`],
     ];
+    const idx = cp.relation.indexes || [];
+    if (idx.length) {
+      const bytes = idx.reduce((a, i) => a + i.main_bytes, 0);
+      const leaf = idx.reduce((a, i) => a + i.leaf_pages, 0);
+      const dens = idx.map((i) => `${i.name.replace(/^.*_(\w+)$/, "$1")} ${Number(i.avg_leaf_density).toFixed(0)}%`).join(", ");
+      facts.push(["Indexes", `${(bytes / 1024).toFixed(0)} <small>kB, ${fmt(leaf)} leaf pages, density ${dens}</small>`]);
+    }
+    if (cp.relation.toast) {
+      const t = cp.relation.toast;
+      facts.push(["TOAST", `${fmt(t.main_pages)} <small>pages, ${fmt(t.pgstattuple_tuple_count)} chunks live, ${fmt(t.pgstattuple_dead_tuple_count)} dead</small>`]);
+    }
+    if (e.total_bytes) facts.push(["Total on disk", `${(e.total_bytes / 1048576).toFixed(2)} <small>MB, all forks, indexes and TOAST</small>`]);
     const n = cp.observer_effect.pages_changed_by_pgstattuple.length;
     if (n) facts.push(["Observer effect", `${fmt(n)} <small>pages changed by pgstattuple</small>`]);
     $("facts").innerHTML = facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");

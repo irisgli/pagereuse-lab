@@ -29,6 +29,12 @@ COMPARISON_COLUMNS = (
     "n_tup_upd",
     "n_tup_hot_upd",
     "pages_changed_by_pgstattuple",
+    "total_bytes",
+    "index_bytes",
+    "index_leaf_pages",
+    "toast_pages",
+    "toast_live_tuples",
+    "toast_dead_tuples",
 )
 
 
@@ -59,6 +65,14 @@ def comparison_rows(result: dict) -> list[dict]:
                 "n_tup_upd": est["n_tup_upd"],
                 "n_tup_hot_upd": est["n_tup_hot_upd"],
                 "pages_changed_by_pgstattuple": len(c["observer_effect"]["pages_changed_by_pgstattuple"]),
+                "total_bytes": e.get("total_bytes", ""),
+                "index_bytes": sum(i["main_bytes"] for i in c["relation"].get("indexes", [])),
+                "index_leaf_pages": sum(i["leaf_pages"] for i in c["relation"].get("indexes", [])),
+                "toast_pages": (c["relation"].get("toast") or {}).get("main_pages", ""),
+                "toast_live_tuples": (c["relation"].get("toast") or {}).get("pgstattuple_tuple_count", ""),
+                "toast_dead_tuples": (c["relation"].get("toast") or {}).get(
+                    "pgstattuple_dead_tuple_count", ""
+                ),
             }
         )
     return rows

@@ -20,8 +20,8 @@ def lab_db():
         pytest.fail(f"lab PostgreSQL not reachable at {db.dsn()}: run `docker compose up -d --wait`\n{e}")
 
 
-def _suite(name):
-    return {cfg.label: run(cfg) for cfg in SUITES[name](ROWS)}
+def _suite(name, rows=ROWS):
+    return {cfg.label: run(cfg) for cfg in SUITES[name](rows)}
 
 
 @pytest.fixture(scope="session")
@@ -57,3 +57,8 @@ def ovl():
 @pytest.fixture(scope="session")
 def av():
     return _suite("autovacuum")
+
+
+@pytest.fixture(scope="session")
+def sto():
+    return _suite("storage", rows=1000)
