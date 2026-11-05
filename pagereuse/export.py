@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 
 from .metrics import PAGE_COLUMNS
@@ -78,10 +79,20 @@ def comparison_rows(result: dict) -> list[dict]:
     return rows
 
 
+_NUMBER_LIST = re.compile(r"\[\n\s+(-?\d+(?:\.\d+)?(?:,\n\s+-?\d+(?:\.\d+)?)*)\n\s+\]")
+
+
+def dumps(result: dict) -> str:
+    """Indented JSON, except that lists of numbers (row ids, row locations)
+    stay on one line instead of one number per line."""
+    text = json.dumps(result, indent=2, default=str)
+    return _NUMBER_LIST.sub(lambda m: "[" + re.sub(r",\n\s+", ", ", m.group(1)) + "]", text)
+
+
 def write_result(result: dict, out_dir: Path) -> Path:
     run_dir = Path(out_dir) / result["run_id"]
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "result.json").write_text(json.dumps(result, indent=2, default=str) + "\n")
+    (run_dir / "result.json").write_text(dumps(result) + "\n")
     with open(run_dir / "pages.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["run_id", "checkpoint", *PAGE_COLUMNS])

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .experiment import ExperimentConfig, run
 from .export import write_comparison, write_result
-from .model import write_evaluation
+from .model import PREDICTORS, write_evaluation
 from .server import index_runs, load_run, serve
 from .suites import SUITES
 from .validate import validate
@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> None:
                 f"{row['predictor']:14s} {row['op']:18s} {row['n']:4d} {row['mae']:7.2f} "
                 f"{row['max_abs_error']:5d} {row['exact_rate']:6.0%}"
             )
-        for name in ("last_value", "linear_trend", "capacity"):
+        for name in PREDICTORS:
             errs = [abs(r["error"]) for r in report["rows"] if r["predictor"] == name]
             exact = sum(e == 0 for e in errs) / len(errs)
             print(f"{name:14s} overall MAE {sum(errs) / len(errs):.2f}, exact {exact:.0%}")

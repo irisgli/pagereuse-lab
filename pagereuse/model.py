@@ -11,6 +11,10 @@ Predictors
   capacity      slotted-page accounting (the physical model, see below)
                 plus PostgreSQL's documented autovacuum trigger rule for
                 wait_autovacuum steps
+  capacity_rows the same accounting, but updates are placed row by row: the
+                checkpoint records where every live row sits, and the step
+                records which ids it targets, so the model knows which pages
+                the new versions must first try (see ``predict_capacity_rows``)
 
 The capacity model follows how PostgreSQL places tuples:
 * An INSERT asks the free space map for a page with at least
@@ -142,6 +146,159 @@ def predict_capacity(history: list[int], prev: dict, op: dict, env: dict, cfg: d
     return npages + math.ceil(overflow / per_new_page)
 
 
+def _tuple_len(lp_len: int, grow_bytes: int) -> int:
+    """Stored length of the row's next version when its payload grows by ``grow_bytes``.
+
+    Lab tuples are a 24-byte header, two ints and the text payload. The varlena
+    header is 1 byte while the payload is at most 126 bytes and 4 bytes beyond
+    that, so a growing update can cost 3 bytes more than the growth itself."""
+    if grow_bytes == 0:
+        return lp_len
+    fixed = PAGE_HEADER + 8  # tuple header plus id and tag
+    payload = lp_len - fixed - (1 if lp_len - fixed - 1 <= 126 else 4)
+    payload += grow_bytes
+    return fixed + (1 if payload <= 126 else 4) + payload
+
+
+class _Heap:
+    """Per-page free space and spare line pointers, with PostgreSQL's placement
+    rules for a single backend (RelationGetBufferForTuple): try the cached
+    target page; else search the FSM; else, only while no target is cached, try
+    the last page; else extend by one page.
+
+    Two FSM searches exist. A search from the root descends only through nodes
+    that claim enough space, and those upper nodes are written by VACUUM, so
+    leaf values recorded by inserters since then are invisible to it (``root``
+    is the root's claim at the checkpoint). When a cached target fills, the
+    inserter records its space and searches that target's own FSM leaf page
+    directly, where current values are visible. The lab's relations fit in one
+    leaf page, so that search sees every page."""
+
+    def __init__(self, prev: dict, block: int, reserve: int) -> None:
+        pages = prev["pages"]
+        self.block, self.reserve = block, reserve
+        self.free = [p["exact_free_bytes"] for p in pages]
+        self.spare_lp = [p["lp_unused"] for p in pages]
+        self.fsm = [p["fsm_avail_bytes"] for p in pages]
+        # Results written before the root was recorded: assume VACUUM's view.
+        self.root = prev["relation"]["fsm"].get("fsm_root_avail_bytes", max(self.fsm, default=0))
+        self.target: int | None = None
+
+    def heap_free(self, blk: int) -> int:
+        """PageGetHeapFreeSpace: usable bytes once a new line pointer is paid for."""
+        return max(0, self.free[blk] - LINE_POINTER)
+
+    def put(self, blk: int, size: int) -> None:
+        if self.spare_lp[blk]:
+            self.spare_lp[blk] -= 1
+        else:
+            size += LINE_POINTER
+        self.free[blk] -= size
+
+    def record(self, blk: int) -> None:
+        """RecordPageWithFreeSpace: the FSM keeps BLCKSZ/256-byte categories, rounded down."""
+        step = self.block // 256
+        self.fsm[blk] = self.heap_free(blk) // step * step
+
+    def leaf_search(self, want: int) -> int | None:
+        return next((b for b, f in enumerate(self.fsm) if f >= want), None)
+
+    def root_search(self, want: int) -> int | None:
+        if self.root < want:
+            return None
+        blk = self.leaf_search(want)
+        if blk is None:
+            self.root = max(self.fsm)  # fsm_search corrects an upper node that promised too much
+        return blk
+
+    def place(self, size: int) -> None:
+        """Place one MAXALIGNed tuple of ``size`` bytes."""
+        want = size + self.reserve
+        if self.target is not None:
+            if want <= self.heap_free(self.target):
+                return self.put(self.target, size)
+            self.record(self.target)
+            blk = self.leaf_search(want)
+        else:
+            blk = self.root_search(want)
+            if blk is None:
+                blk = len(self.free) - 1
+        while True:
+            if blk is None:
+                self.free.append(self.block - PAGE_HEADER)
+                self.spare_lp.append(0)
+                self.fsm.append(0)
+                blk = len(self.free) - 1
+            self.target = blk
+            if want <= self.heap_free(blk):
+                return self.put(blk, size)
+            self.record(blk)
+            blk = self.leaf_search(want)
+
+
+def predict_capacity_rows(history: list[int], prev: dict, op: dict, env: dict, cfg: dict) -> int:
+    """The capacity model with row identities.
+
+    Each update first tries the page its old version is on, using that page's
+    real free space (fillfactor reserve included); a version that does not fit
+    is placed at once like an insert, before the next row is updated. Reaching
+    the page may prune it: heap_page_prune_opt runs when the page is flagged
+    full or has under ``max(reserve, BLCKSZ/10)`` bytes free, and returns the
+    space of dead versions older than the xmin horizon. Versions this step
+    creates are not prunable yet. Payload updates are one statement per row and
+    get that check on every access; a single-statement tag update gets it when
+    an index scan moves to another page, or once per page under a bitmap or
+    sequential scan, which also visits the rows in block order.
+    Results without ``live_rows`` fall back to ``capacity``."""
+    kind = op["op"]
+    rows = prev.get("live_rows")
+    if kind not in ("insert", "update") or (kind == "update" and not (rows and "ids" in op)):
+        return predict_capacity(history, prev, op, env, cfg)
+    pages = prev["pages"]
+    block = env["block_size"]
+    reserve = block * (100 - cfg["fillfactor"]) // 100
+    heap = _Heap(prev, block, reserve)
+
+    if kind == "insert":
+        size = (env.get("insert_footprint") or tuple_footprint(pages)) - LINE_POINTER
+        for _ in range(int(op["rows"])):
+            heap.place(size)
+        return len(heap.free)
+
+    where = dict(zip(rows["id"], zip(rows["blkno"], rows["lp_len"], strict=True), strict=True))
+    per_statement = op.get("column", "payload") == "payload"
+    grow = int(op.get("grow_bytes", 0)) if per_statement else 0  # only the payload grows
+    minfree = max(reserve, block // 10)
+    mean_dead = _align(tuple_footprint(pages) - LINE_POINTER)
+    dead = [p.get("dead_removable_bytes", p["dead_removable"] * mean_dead) for p in pages]
+    full = [p.get("page_full", False) for p in pages]
+    scan = op.get("scan", "index")
+    visits = [(where[i][0], _align(_tuple_len(where[i][1], grow))) for i in op["ids"]]
+    if scan != "index":
+        visits.sort(key=lambda v: v[0])
+
+    def prune(blk: int) -> None:
+        if full[blk] or heap.heap_free(blk) < minfree:
+            heap.free[blk] += dead[blk]
+            dead[blk] = 0
+            full[blk] = False
+
+    if scan == "seq":
+        for blk in range(len(pages)):
+            prune(blk)
+    last = None
+    for blk, size in visits:
+        if per_statement or blk != last:
+            prune(blk)
+        last = blk
+        if size <= heap.heap_free(blk):
+            heap.put(blk, size)
+        else:
+            full[blk] = True
+            heap.place(size)
+    return len(heap.free)
+
+
 def _proportional(n: int, weights: list[int]) -> list[int]:
     """Split n across pages in proportion to weights; largest remainders take the leftover."""
     total = sum(weights)
@@ -158,6 +315,7 @@ PREDICTORS = {
     "last_value": predict_last_value,
     "linear_trend": predict_linear_trend,
     "capacity": predict_capacity,
+    "capacity_rows": predict_capacity_rows,
 }
 
 

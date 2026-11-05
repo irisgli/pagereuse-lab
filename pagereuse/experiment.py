@@ -40,6 +40,9 @@ Methodology (recorded in every result file):
 * Page metrics are read via pageinspect before pgstattuple runs, because
   pgstattuple's scan can opportunistically prune pages. Pages it changed are
   reported under ``observer_effect``.
+* Each checkpoint also records where every live row sits (``live_rows``: id,
+  block, stored length) and each update step records the ids it targets, so a
+  predictor can follow rows across relocations without replaying the workload.
 """
 
 from __future__ import annotations
@@ -58,7 +61,7 @@ from psycopg import sql
 
 from . import db, metrics
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def default_steps(rows: int, delete_every: int, vacuum: bool) -> list[dict]:
@@ -164,11 +167,16 @@ def _measure(conninfo, table: str, idx: int, operation: dict) -> dict:
     with db.connect(conninfo) as conn:
         pages = metrics.page_metrics(conn, table)
         rel = metrics.relation_metrics(conn, table)  # runs pgstattuple (may prune)
+        rows = metrics.live_rows(conn, table)
+        fsm_root = metrics.fsm_root_avail(conn, table)
         after = metrics.page_metrics(conn, table)
     changed = [b["blkno"] for b, a in zip(pages, after, strict=True) if a != b]
+    if len(rows["id"]) != rel["exact"]["pgstattuple_tuple_count"]:
+        raise RuntimeError(f"{table}: live_rows found {len(rows['id'])} rows, pgstattuple disagrees")
     rel["fsm"] = {
         "fsm_total_avail_bytes": sum(p["fsm_avail_bytes"] for p in pages),
         "pages_with_fsm_space": sum(1 for p in pages if p["fsm_avail_bytes"] > 0),
+        "fsm_root_avail_bytes": fsm_root,
     }
     rel["exact"]["page_free_bytes_total"] = sum(p["exact_free_bytes"] for p in pages)
     rel["exact"]["pages_all_visible"] = sum(1 for p in pages if p["all_visible"])
@@ -182,6 +190,7 @@ def _measure(conninfo, table: str, idx: int, operation: dict) -> dict:
         "relation": rel,
         "observer_effect": {"pages_changed_by_pgstattuple": changed},
         "pages": pages,
+        "live_rows": rows,
     }
 
 
@@ -284,10 +293,12 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
             ids = _select_ids(sorted(st.live), s, rng)
             col = s.get("column", "payload")
             grow = int(s.get("grow_bytes", 0))
+            scan = "index"  # payload updates are one statement per id, always an index fetch
             if col == "tag":
-                cnt = conn.execute(
-                    sql.SQL("UPDATE {} SET tag = tag + 1000 WHERE id = ANY(%s)").format(t), (ids,)
-                ).rowcount
+                stmt = sql.SQL("UPDATE {} SET tag = tag + 1000 WHERE id = ANY(%s)").format(t)
+                plan = conn.execute(sql.SQL("EXPLAIN (FORMAT JSON) ") + stmt, (ids,)).fetchone()[0]
+                scan = _scan_type(plan)
+                cnt = conn.execute(stmt, (ids,)).rowcount
             else:
                 # Same-length payload unless grow_bytes > 0; executemany keeps lengths exact.
                 new = [(_payloads(rng, 1, st.live[i] + grow)[0], i) for i in ids]
@@ -302,6 +313,8 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
                 "column": col,
                 "grow_bytes": grow,
                 "pattern": s.get("pattern", "stride"),
+                "ids": ids,  # chosen before the statement ran, from the previous checkpoint's live set
+                "scan": scan,
             }
 
         if op == "vacuum":
@@ -319,6 +332,18 @@ def _run_step(cfg: ExperimentConfig, conninfo, s: dict, st: _State, rng: random.
             }
 
     raise ValueError(op)
+
+
+def _scan_type(plan: list) -> str:
+    """How the planner will reach the rows of a single-statement update: "index"
+    (id order, pruning when the fetch moves to another page), "bitmap" or "seq"
+    (block order, each page pruned once on entry). Read from EXPLAIN before the
+    statement runs, so it describes the operation, not its outcome."""
+    kinds = {"Index Scan": "index", "Bitmap Heap Scan": "bitmap", "Seq Scan": "seq"}
+    node = plan[0]["Plan"]
+    while node["Node Type"] not in kinds:
+        node = node["Plans"][0]  # Update -> heap scan (a Bitmap Heap Scan's own child is the index)
+    return kinds[node["Node Type"]]
 
 
 def _autovacuum_count(conn, table: str) -> int:

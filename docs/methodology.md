@@ -17,7 +17,7 @@ PostgreSQL relations sometimes grow although space inside them could, in princip
 - Autovacuum is disabled on every experiment table unless the run's `autovacuum` reloptions enable it. For such runs the lab sets `autovacuum_naptime` to 1 s with `ALTER SYSTEM` (the default 60 s nap would dominate every wait); this is server-wide, is recorded in `environment.autovacuum`, and is not reverted. Otherwise VACUUM runs only as an explicit step.
 - Every step runs on a fresh connection. A backend caches its last insertion target block; a fresh backend starts from the FSM, which keeps the FSM, not session state, as the thing under test.
 - Payloads are fixed-length random ASCII, seeded, far below the TOAST threshold, so all tuples of a run have the same size and nothing is compressed or stored out of line.
-- Row choice for deletes and updates is deterministic given the seed. `stride` picks ids divisible by k, `random` a seeded sample, `oldest` the first fraction of live ids.
+- Row choice for deletes and updates is deterministic given the seed. `stride` picks ids divisible by k, `random` a seeded sample, `oldest` the first fraction of live ids. Payload updates run one statement per id in id order; a tag update is one statement whose plan the planner picks (an index scan for long id lists, a bitmap heap scan for short ones).
 - The same seed gives byte-identical page layouts across runs; a test checks this.
 
 ## Measurements and their provenance
@@ -25,14 +25,18 @@ PostgreSQL relations sometimes grow although space inside them could, in princip
 | Group | Source | How to read it |
 |---|---|---|
 | `exact` | `pg_relation_size`, `pgstattuple`, `pageinspect` | Read from the relation's bytes at that moment. `exact_free_bytes` is `pd_upper - pd_lower`. |
-| `fsm` | `pg_freespace(rel, blkno)` | What the FSM recorded, in 32-byte categories rounded down. Written by VACUUM and when an inserter leaves a page; not updated by later inserts into that page, so it can overstate. |
+| `fsm` | `pg_freespace(rel, blkno)`, and the FSM root page via `get_raw_page(rel, 'fsm', 0)` | What the FSM recorded per page, in 32-byte categories rounded down. Written by VACUUM and when an inserter leaves a page; not updated by later inserts into that page, so it can overstate. The root value (`fsm_root_avail_bytes`) is the most space the tree's top claims anywhere; only VACUUM raises it. |
 | `estimated` | `pg_class.relpages`, `reltuples`, `pg_stat_user_tables` | Planner estimates and cumulative counters. Used for `n_tup_hot_upd` and nothing load-bearing. |
 
-Per page the lab records the line-pointer state counts, the xmin horizon at read time (`min(backend_xmin)` over other sessions in `pg_stat_activity`), how many xmax-set tuples are older than it (`dead_removable`), (unused, normal, redirect, dead), how many normal tuples carry a nonzero `xmax`, the bytes those tuples occupy, and the `PD_ALL_VISIBLE` flag.
+Per page the lab records the line-pointer state counts (unused, normal, redirect, dead), the xmin horizon at read time (`min(backend_xmin)` over other sessions in `pg_stat_activity`), how many xmax-set tuples are older than it (`dead_removable`) and the MAXALIGNed bytes they occupy (`dead_removable_bytes`), how many normal tuples carry a nonzero `xmax`, the bytes those tuples occupy, and the `PD_PAGE_FULL` and `PD_ALL_VISIBLE` flags.
+
+Each checkpoint also records `live_rows`: for every live row, its id, the block its visible version is on and that version's stored length. `pageinspect` lists every normal tuple on every page; a TID scan over those positions then lets the server apply MVCC visibility, so a row updated several times maps to exactly one version even while its older versions and HOT chain are still on the page. The count is checked against `pgstattuple`. Each update step records the ids it targets, chosen from the previous checkpoint's live set before the statement runs, and for a single-statement update the scan type `EXPLAIN` reports beforehand (index, bitmap or sequential), since that decides the order in which pages are reached and when they are pruned.
 
 ## Observer effects
 
-`pgstattuple` scans the heap, and a heap scan can opportunistically prune a page. Page metrics are therefore read with `pageinspect` before `pgstattuple` runs, then read again, and every page that changed is listed under `observer_effect`. In all recorded runs that list is empty.
+`pgstattuple` scans the heap, and a heap scan can opportunistically prune a page. Page metrics are therefore read with `pageinspect` before `pgstattuple` and the row-location query run, then read again, and every page that changed is listed under `observer_effect`. In all recorded runs that list is empty.
+
+The row-location query deliberately avoids a sequential scan: a plain `SELECT id, ctid` is executed in page-at-a-time mode and calls `heap_page_prune_opt` on every page, which pruned every full page in a trial run and would have handed the next step pages it should have pruned itself. A TID scan fetches tuples without pruning; `enable_seqscan` is switched off for that one statement because the planner otherwise prefers a sequential scan for long TID lists. (`pgstattuple` is safe for a different reason: it scans without page mode and that path never prunes.)
 
 ## What "free" means
 
@@ -44,6 +48,10 @@ Per page the lab records the line-pointer state counts, the xmin horizon at read
 - space held by dead versions is unavailable until pruning or VACUUM.
 
 The viewer's "FSM minus measured" colouring exists to make the gap between recorded and actual free space visible rather than averaged away.
+
+## Two FSM searches
+
+An inserter with no cached target page searches the FSM from the root, descending only through nodes that claim enough space. Those upper nodes are written by `FreeSpaceMapVacuum`, which VACUUM runs; the per-page values an inserter records when it leaves a full page go into the leaf only. Measured: after loading a table that has never been vacuumed, every leaf holds a value but the root page's category is 0, and no search from the root finds anything, so new versions go to the last page and then to fresh pages even when a pruned page with kilobytes free has an FSM entry. After VACUUM the root carries the largest leaf category. The second search is the one an inserter runs when its cached target page fills: it records the page's space and searches that page's own FSM leaf page directly, where current values are visible. `capacity_rows` models both; `capacity` treats every leaf value as searchable.
 
 ## Findings pinned by tests
 

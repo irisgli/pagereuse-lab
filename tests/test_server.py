@@ -61,7 +61,7 @@ def test_api_predictions(base_url):
     run_id = json.loads(body)[0]["run_id"]
     _, _, body = get(f"{base_url}/api/runs/{run_id}/predictions")
     rows = json.loads(body)
-    assert {r["predictor"] for r in rows} == {"last_value", "linear_trend", "capacity"}
+    assert {r["predictor"] for r in rows} == {"last_value", "linear_trend", "capacity", "capacity_rows"}
     assert {r["step"] for r in rows} == {1, 2, 3}
     assert all({"predicted", "actual", "error"} <= set(r) for r in rows)
     with pytest.raises(urllib.error.HTTPError):

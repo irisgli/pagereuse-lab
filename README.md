@@ -4,7 +4,7 @@
 
 **Controlled experiments on when PostgreSQL heap relations grow despite potentially reusable space.**
 
-[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 12](https://img.shields.io/badge/phase-12%20visualization-informational)
+[![ci](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/irisgli/pagereuse-lab/actions/workflows/ci.yml) ![PostgreSQL 16 to 18](https://img.shields.io/badge/PostgreSQL-16%20%7C%2017%20%7C%2018-336791) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Phase 13](https://img.shields.io/badge/phase-13%20row%20identity-informational)
 
 </div>
 
@@ -59,38 +59,40 @@ A workload is a list of steps; the table is measured after every step. Test tabl
 | Group | Source | Nature |
 |---|---|---|
 | `exact` | `pg_relation_size`, `pgstattuple`, `pageinspect` (`pd_upper - pd_lower`, line pointer states) | Read from the relation's bytes |
-| `fsm` | `pg_freespace(rel, blkno)` | Recorded value in 32-byte categories, rounded down when written. Written by VACUUM and when an inserter leaves a full page; later inserts do not update it, so it can overstate free space |
+| `fsm` | `pg_freespace(rel, blkno)`, FSM root page via `get_raw_page` | Recorded value in 32-byte categories, rounded down when written. Written by VACUUM and when an inserter leaves a full page; later inserts do not update it, so it can overstate free space. The root's claim is recorded too: only VACUUM raises it, and a search from the root sees nothing above it |
 | `estimated` | `pg_class.relpages/reltuples`, `pg_stat_user_tables` | Planner estimates and cumulative stats |
 
 Each checkpoint also records every index's size and `pgstatindex` statistics (leaf, deleted and empty pages, leaf density), the TOAST table's size and exact tuple counts when the table has one, and `pg_total_relation_size`. `storage="external"` on a run forces the payload out of line so TOAST placement is deterministic.
 
-Each page record also carries `dead_removable`: deleted versions older than the xmin horizon (the oldest `backend_xmin` among other sessions), which is what a VACUUM run at that moment could remove.
+Each page record also carries `dead_removable`: deleted versions older than the xmin horizon (the oldest `backend_xmin` among other sessions), which is what a VACUUM run at that moment could remove, and the bytes they occupy. Each checkpoint records `live_rows`, the block and stored length of every live row's visible version (pageinspect positions resolved through a TID scan, which unlike a sequential scan does not prune), and each update step records the ids it targets and the scan type its plan uses.
 
 ## Viewer
 
-`pagereuse serve` reads `results/` and serves a dependency-free viewer: a run list grouped by suite, a step strip of page counts with the capacity model's prediction drawn on each step and its error shown, a heatmap with one cell per heap page in file order (colour by measured free bytes, FSM record, FSM minus measured, dead or redirect line pointers, xmax set, all-visible flag, live tuples, or change since the previous step with new pages in amber), per-page hover details, index and TOAST facts, and an overlay chart of page counts across ticked runs with the model's predictions dashed.
+`pagereuse serve` reads `results/` and serves a dependency-free viewer: a run list grouped by suite, a step strip of page counts with the row-aware capacity model's prediction drawn on each step and its error shown, a heatmap with one cell per heap page in file order (colour by measured free bytes, FSM record, FSM minus measured, dead or redirect line pointers, xmax set, all-visible flag, live tuples, or change since the previous step with new pages in amber), per-page hover details, index and TOAST facts, and an overlay chart of page counts across ticked runs with the model's predictions dashed.
 
 ## Predicting growth
 
-`pagereuse evaluate` scores three one-step-ahead predictors of the page count on every saved run, walk-forward, and writes `results/model_eval.csv`. Each predictor sees only the previous checkpoint's measurements and the operation about to run.
+`pagereuse evaluate` scores four one-step-ahead predictors of the page count on every saved run, walk-forward, and writes `results/model_eval.csv`. Each predictor sees only the previous checkpoint's measurements and the operation about to run.
 
 | Predictor | What it does |
 |---|---|
 | `last_value` | pages stay what they were |
 | `linear_trend` | least-squares line through the page counts so far |
 | `capacity` | slotted-page accounting: inserts use pages the FSM offers for `tuple + reserve` bytes, then the last page, then extend; updates stay on their page when the new version fits (reserve usable, dead versions pruned first); VACUUM removes only versions older than the xmin horizon and truncates a tail left with no live tuple |
+| `capacity_rows` | the same accounting with row identities: each checkpoint records which block every live row's visible version is on and how long it is, and each update step records the ids it targets, so every new version first tries the page its row is actually on, prunes it under PostgreSQL's rule (page flagged full, or under `max(reserve, BLCKSZ/10)` bytes free, and only versions older than the xmin horizon), and is otherwise placed at once like an insert; inserts reuse spare line pointers and see FSM space only where the FSM root (written by VACUUM) admits it |
 
-On the three suites at 2000 rows the capacity model is exact on every insert, delete, VACUUM and first update round, and has mean absolute error under 2 pages against about 10 for `last_value`. It underestimates repeat updates once an earlier round relocated the hot rows to fresh pages, because measurements carry no row identities; the test suite pins this.
+On the three suites at 2000 rows `capacity` is exact on every insert, delete, VACUUM and first update round, and has mean absolute error under 2 pages against about 10 for `last_value`. It underestimates repeat updates once an earlier round relocated the hot rows to fresh pages: it spreads the updates over pages in proportion to their live tuples and credits pruned space on the pages the rows left. `capacity_rows` is exact on every step of those suites, including the second and third update rounds, growing payloads and indexed-column updates; the test suite pins both.
 
-`pagereuse validate` scores the predictors on seeded random workloads (1000 to 3000 rows, payloads 64 to 700 bytes, fillfactor 70 to 100, mixed deletes, updates, inserts, VACUUMs and snapshot holds) that were not used while building the model. On 12 such workloads, 225 scored steps:
+`pagereuse validate` scores the predictors on seeded random workloads (1000 to 3000 rows, payloads 64 to 700 bytes, fillfactor 70 to 100, mixed deletes, updates, inserts, VACUUMs and snapshot holds) that were not used while building the model. On 12 such workloads (seeds 1000 to 1011, 75 scored steps) and a second batch of 12 run once after the row model was finished (seeds 2000 to 2011, 83 steps):
 
-| Predictor | MAE (pages) | Exact |
-|---|---|---|
-| `last_value` | 20.9 | 64% |
-| `linear_trend` | 32.3 | 40% |
-| `capacity` | 0.9 | 85% |
+| Predictor | MAE (pages) | Exact | MAE, second batch | Exact, second batch |
+|---|---|---|---|---|
+| `last_value` | 20.9 | 64% | 5.0 | 73% |
+| `linear_trend` | 32.3 | 40% | 8.4 | 43% |
+| `capacity` | 0.9 | 85% | 0.8 | 87% |
+| `capacity_rows` | 0.0 | 100% | 0.0 | 100% |
 
-By operation, `capacity` was exact on every delete, VACUUM and snapshot step, within one page on inserts, and weakest on updates (MAE 3.8, max 22 pages, 53% exact). Machine learning is deferred until a workload beats this physical model.
+By operation, `capacity` is exact on every delete, VACUUM and snapshot step, within one page on inserts, and weakest on updates (MAE 3.8, max 22 pages, 53% exact on the first batch; 3.4, 21 and 44% on the second). `capacity_rows` is exact on every step of both batches. Scrambling the recorded row locations while keeping every other measurement (a seeded permutation of blocks) brings its update error back to MAE 0.6 on the random workloads and 4.4 on the suites, where repeat updates dominate, so the identities are what the repeat-update predictions depend on; the rest of the gain comes from placing new versions one at a time in statement order, charging spare line pointers, and distinguishing the FSM search from the root (which sees only what VACUUM wrote there) from the search an inserter runs when its target page fills. Machine learning is deferred until a workload beats this physical model.
 
 ## Beyond the heap
 

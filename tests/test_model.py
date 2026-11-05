@@ -91,5 +91,5 @@ def test_write_evaluation_csv(cyc, tmp_path):
     rows, summary = write_evaluation(list(cyc.values()), tmp_path / "eval.csv")
     with open(tmp_path / "eval.csv") as f:
         on_disk = list(csv.DictReader(f))
-    assert len(on_disk) == len(rows) == 3 * sum(len(r["checkpoints"]) - 1 for r in cyc.values())
+    assert len(on_disk) == len(rows) == len(PREDICTORS) * sum(len(r["checkpoints"]) - 1 for r in cyc.values())
     assert [s["predictor"] for s in summary] == list(PREDICTORS)

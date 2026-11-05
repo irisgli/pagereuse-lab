@@ -77,7 +77,7 @@
   async function predictionsFor(id) {
     if (!state.predictions[id]) {
       const rows = await (await fetch(`/api/runs/${id}/predictions`)).json();
-      state.predictions[id] = rows.filter((r) => r.predictor === "capacity");
+      state.predictions[id] = rows.filter((r) => r.predictor === "capacity_rows");
     }
     return state.predictions[id];
   }
